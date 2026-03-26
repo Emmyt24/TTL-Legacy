@@ -5,6 +5,7 @@ use soroban_sdk::{contracttype, Address, Symbol, Env};
 pub enum DataKey {
     Vault(u64),
     VaultCount,
+    TokenAddress,
 }
 
 #[contracttype]
