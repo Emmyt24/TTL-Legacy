@@ -158,6 +158,11 @@ impl TtlVaultContract {
             panic_with_error!(&env, ContractError::AlreadyReleased);
         }
 
+        let now = env.ledger().timestamp();
+        if now >= vault.last_check_in + vault.check_in_interval {
+            panic_with_error!(&env, ContractError::AlreadyReleased);
+        }
+
         let xlm = token::Client::new(&env, &Self::load_token(&env));
         xlm.transfer(&from, &env.current_contract_address(), &amount);
 

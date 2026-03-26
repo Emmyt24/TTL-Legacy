@@ -132,3 +132,12 @@ fn test_update_beneficiary_rejects_owner_as_beneficiary() {
     let vault_id = client.create_vault(&owner, &beneficiary, &1000);
     client.update_beneficiary(&vault_id, &owner);
 }
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_deposit_into_expired_vault_is_rejected() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    env.ledger().with_mut(|l| l.timestamp += 200);
+    client.deposit(&vault_id, &owner, &500i128);
+}
