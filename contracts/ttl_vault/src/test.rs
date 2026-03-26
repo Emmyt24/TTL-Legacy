@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Ledger, storage::Instance},
     Address, Env,
 };
 use types::VaultError;
@@ -13,6 +13,24 @@ fn setup() -> (Env, Address, Address) {
     let owner = Address::generate(&env);
     let beneficiary = Address::generate(&env);
     (env, owner, beneficiary)
+}
+
+#[test]
+fn test_create_vault_extends_instance_ttl() {
+    let (env, owner, beneficiary) = setup();
+    let contract_id = env.register_contract(None, TtlVaultContract);
+    let client = TtlVaultContractClient::new(&env, &contract_id);
+
+    client.create_vault(&owner, &beneficiary, &86400u64);
+
+    // Instance TTL must be at least the threshold away from expiry.
+    let ttl = env.as_contract(&contract_id, || {
+        env.storage().instance().get_ttl()
+    });
+    assert!(
+        ttl >= INSTANCE_TTL_THRESHOLD,
+        "instance TTL {ttl} is below threshold {INSTANCE_TTL_THRESHOLD}"
+    );
 }
 
 #[test]

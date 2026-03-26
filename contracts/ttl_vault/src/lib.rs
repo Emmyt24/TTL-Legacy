@@ -5,6 +5,11 @@ mod test;
 mod types;
 use types::{DataKey, ReleaseStatus, Vault, VaultError};
 
+/// ~1 year in ledgers (1 ledger ≈ 5 s).
+const INSTANCE_TTL_LEDGERS: u32 = 6_307_200;
+/// Extend when less than ~30 days remain.
+const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
+
 #[contract]
 pub struct TtlVaultContract;
 
@@ -41,6 +46,9 @@ impl TtlVaultContract {
         env.storage()
             .instance()
             .set(&DataKey::VaultCount, &vault_id);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
 
         vault_id
     }
