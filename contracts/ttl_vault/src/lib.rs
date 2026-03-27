@@ -311,6 +311,10 @@ impl TtlVaultContract {
         env.storage().instance().get(&DataKey::VaultCount).unwrap_or(0u64)
     }
 
+    pub fn get_contract_token(env: Env) -> Address {
+        Self::load_token(&env)
+    }
+
     pub fn update_beneficiary(env: Env, vault_id: u64, new_beneficiary: Address) {
         let mut vault = Self::load_vault(&env, vault_id);
         vault.owner.require_auth();

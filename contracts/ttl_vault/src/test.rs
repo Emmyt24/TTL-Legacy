@@ -383,3 +383,9 @@ fn test_update_metadata_can_be_overwritten() {
         soroban_sdk::String::from_str(&env, "v2")
     );
 }
+
+#[test]
+fn test_get_contract_token_returns_correct_address() {
+    let (_, _, _, _, token_address, client) = setup();
+    assert_eq!(client.get_contract_token(), token_address);
+}
