@@ -150,6 +150,48 @@ impl TtlVaultContract {
         Self::save_vault(&env, vault_id, &vault);
     }
 
+ feat/batch-deposit
+    /// Deposit into multiple vaults in a single transfer from the same address.
+    pub fn batch_deposit(env: Env, from: Address, deposits: Vec<(u64, i128)>) {
+        Self::assert_not_paused(&env);
+        from.require_auth();
+
+        let mut validated = Vec::new(&env);
+        let mut total_amount = 0i128;
+
+        for deposit in deposits.iter() {
+            let (vault_id, amount) = deposit;
+            if amount <= 0 {
+                panic_with_error!(&env, ContractError::InvalidAmount);
+            }
+
+            let vault = Self::load_vault(&env, vault_id);
+            if vault.status != ReleaseStatus::Locked {
+                panic_with_error!(&env, ContractError::AlreadyReleased);
+            }
+
+            total_amount = total_amount
+                .checked_add(amount)
+                .unwrap_or_else(|| panic_with_error!(&env, ContractError::InvalidAmount));
+            validated.push_back((vault_id, vault, amount));
+        }
+
+        if total_amount == 0 {
+            return;
+        }
+
+        let xlm = token::Client::new(&env, &Self::load_token(&env));
+        xlm.transfer(&from, &env.current_contract_address(), &total_amount);
+
+        for validated_deposit in validated.iter() {
+            let (vault_id, mut vault, amount) = validated_deposit;
+            vault.balance += amount;
+            Self::save_vault(&env, vault_id, &vault);
+        }
+    }
+
+    /// Owner withdraws from the vault.
+ main
     pub fn withdraw(env: Env, vault_id: u64, amount: i128) -> Result<(), ContractError> {
         if Self::load_paused(&env) {
             return Err(ContractError::Paused);

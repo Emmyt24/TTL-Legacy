@@ -100,6 +100,50 @@ fn test_get_release_status_view() {
 }
 
 #[test]
+fn test_batch_deposit_updates_multiple_vaults() {
+    let (env, owner, beneficiary, _, token_address, client) = setup();
+
+    let vault_id_1 = client.create_vault(&owner, &beneficiary, &100u64);
+    let vault_id_2 = client.create_vault(&owner, &beneficiary, &200u64);
+    let token_client = token::Client::new(&env, &token_address);
+
+    client.batch_deposit(
+        &owner,
+        &vec![&env, (vault_id_1, 150i128), (vault_id_2, 250i128)],
+    );
+
+    assert_eq!(client.get_vault(&vault_id_1).balance, 150i128);
+    assert_eq!(client.get_vault(&vault_id_2).balance, 250i128);
+    assert_eq!(token_client.balance(&owner), 999_600i128);
+}
+
+#[test]
+fn test_batch_deposit_validates_all_items_before_transfer() {
+    let (env, owner, beneficiary, _, token_address, client) = setup();
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    let token_client = token::Client::new(&env, &token_address);
+
+    assert!(
+        client
+            .try_batch_deposit(&owner, &vec![&env, (vault_id, 100i128), (999u64, 200i128)])
+            .is_err()
+    );
+
+    assert_eq!(client.get_vault(&vault_id).balance, 0i128);
+    assert_eq!(token_client.balance(&owner), 1_000_000i128);
+
+    assert!(
+        client
+            .try_batch_deposit(&owner, &vec![&env, (vault_id, 100i128), (vault_id, 0i128)])
+            .is_err()
+    );
+
+    assert_eq!(client.get_vault(&vault_id).balance, 0i128);
+    assert_eq!(token_client.balance(&owner), 1_000_000i128);
+}
+
+#[test]
 fn test_pause_and_unpause_toggle() {
     let (_, _, _, _, _, client) = setup();
 
