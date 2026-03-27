@@ -4,7 +4,7 @@ use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::{self, StellarAssetClient},
-    Address, Env,
+    vec, Address, BytesN, Env,
 };
 
 fn setup() -> (
@@ -38,6 +38,8 @@ fn setup() -> (
     (env, owner, beneficiary, admin, token_address, client)
 }
 
+// ---- existing tests ----
+
 #[test]
 #[should_panic(expected = "Error(Contract, #1)")]
 fn test_initialize_guard_against_double_init() {
@@ -66,6 +68,18 @@ fn test_vault_count_view() {
 }
 
 #[test]
+fn test_vault_exists_for_existing_and_missing_ids() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+
+    assert!(!client.vault_exists(&1));
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+
+    assert!(client.vault_exists(&vault_id));
+    assert!(!client.vault_exists(&(vault_id + 1)));
+}
+
+#[test]
 fn test_get_release_status_view() {
     let (env, owner, beneficiary, _, token_address, client) = setup();
 
@@ -86,6 +100,50 @@ fn test_get_release_status_view() {
 }
 
 #[test]
+fn test_batch_deposit_updates_multiple_vaults() {
+    let (env, owner, beneficiary, _, token_address, client) = setup();
+
+    let vault_id_1 = client.create_vault(&owner, &beneficiary, &100u64);
+    let vault_id_2 = client.create_vault(&owner, &beneficiary, &200u64);
+    let token_client = token::Client::new(&env, &token_address);
+
+    client.batch_deposit(
+        &owner,
+        &vec![&env, (vault_id_1, 150i128), (vault_id_2, 250i128)],
+    );
+
+    assert_eq!(client.get_vault(&vault_id_1).balance, 150i128);
+    assert_eq!(client.get_vault(&vault_id_2).balance, 250i128);
+    assert_eq!(token_client.balance(&owner), 999_600i128);
+}
+
+#[test]
+fn test_batch_deposit_validates_all_items_before_transfer() {
+    let (env, owner, beneficiary, _, token_address, client) = setup();
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    let token_client = token::Client::new(&env, &token_address);
+
+    assert!(
+        client
+            .try_batch_deposit(&owner, &vec![&env, (vault_id, 100i128), (999u64, 200i128)])
+            .is_err()
+    );
+
+    assert_eq!(client.get_vault(&vault_id).balance, 0i128);
+    assert_eq!(token_client.balance(&owner), 1_000_000i128);
+
+    assert!(
+        client
+            .try_batch_deposit(&owner, &vec![&env, (vault_id, 100i128), (vault_id, 0i128)])
+            .is_err()
+    );
+
+    assert_eq!(client.get_vault(&vault_id).balance, 0i128);
+    assert_eq!(token_client.balance(&owner), 1_000_000i128);
+}
+
+#[test]
 fn test_pause_and_unpause_toggle() {
     let (_, _, _, _, _, client) = setup();
 
@@ -94,6 +152,13 @@ fn test_pause_and_unpause_toggle() {
     assert!(client.is_paused());
     client.unpause();
     assert!(!client.is_paused());
+}
+
+#[test]
+fn test_get_admin_view() {
+    let (_, _, _, admin, _, client) = setup();
+
+    assert_eq!(client.get_admin(), admin);
 }
 
 #[test]
