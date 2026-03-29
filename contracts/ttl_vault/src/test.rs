@@ -883,3 +883,36 @@ fn test_update_check_in_interval_resets_last_check_in() {
     let now = env.ledger().timestamp();
     assert_eq!(deadline - now, 300u64);
 }
+
+
+#[test]
+fn test_set_min_rejects_when_greater_than_existing_max() {
+    let (_, _, _, _, _, client) = setup();
+    client.set_max_check_in_interval(&1_000u64);
+    assert!(client.try_set_min_check_in_interval(&2_000u64).is_err());
+}
+
+#[test]
+fn test_set_max_rejects_when_less_than_existing_min() {
+    let (_, _, _, _, _, client) = setup();
+    client.set_min_check_in_interval(&1_000u64);
+    assert!(client.try_set_max_check_in_interval(&500u64).is_err());
+}
+
+#[test]
+fn test_set_min_and_max_in_order_succeeds() {
+    let (_, _, _, _, _, client) = setup();
+    client.set_min_check_in_interval(&100u64);
+    client.set_max_check_in_interval(&1_000u64);
+    assert_eq!(client.get_min_check_in_interval(), Some(100u64));
+    assert_eq!(client.get_max_check_in_interval(), Some(1_000u64));
+}
+
+#[test]
+fn test_set_max_then_min_in_order_succeeds() {
+    let (_, _, _, _, _, client) = setup();
+    client.set_max_check_in_interval(&1_000u64);
+    client.set_min_check_in_interval(&100u64);
+    assert_eq!(client.get_min_check_in_interval(), Some(100u64));
+    assert_eq!(client.get_max_check_in_interval(), Some(1_000u64));
+}

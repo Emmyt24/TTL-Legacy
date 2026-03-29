@@ -142,6 +142,11 @@ impl TtlVaultContract {
         if min_interval == 0 {
             panic_with_error!(&env, ContractError::InvalidInterval);
         }
+        if let Some(max) = env.storage().instance().get::<DataKey, u64>(&DataKey::MaxCheckInInterval) {
+            if min_interval > max {
+                panic_with_error!(&env, ContractError::InvalidInterval);
+            }
+        }
         env.storage().instance().set(&DataKey::MinCheckInInterval, &min_interval);
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
     }
@@ -161,6 +166,11 @@ impl TtlVaultContract {
         Self::require_admin(&env);
         if max_interval == 0 {
             panic_with_error!(&env, ContractError::InvalidInterval);
+        }
+        if let Some(min) = env.storage().instance().get::<DataKey, u64>(&DataKey::MinCheckInInterval) {
+            if max_interval < min {
+                panic_with_error!(&env, ContractError::InvalidInterval);
+            }
         }
         env.storage().instance().set(&DataKey::MaxCheckInInterval, &max_interval);
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
