@@ -853,3 +853,16 @@ fn test_update_beneficiary_updates_index() {
     // new beneficiary now sees the vault
     assert_eq!(client.get_vaults_by_beneficiary(&new_beneficiary), vec![&env, vault_id]);
 }
+
+// Regression test for #96: create_vault must assign sequential, non-duplicate vault IDs.
+#[test]
+fn test_create_vault_assigns_sequential_ids() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let b2 = Address::generate(&env);
+
+    let id1 = client.create_vault(&owner, &beneficiary, &100u64);
+    let id2 = client.create_vault(&owner, &b2, &100u64);
+
+    assert_eq!(id1, 1, "first vault must have id 1");
+    assert_eq!(id2, 2, "second vault must have id 2 (sequential, no duplicate assignment)");
+}
