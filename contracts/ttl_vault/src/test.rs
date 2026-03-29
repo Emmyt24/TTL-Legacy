@@ -765,6 +765,29 @@ fn test_trigger_release_returns_not_expired_error_before_ttl_lapses() {
     assert_eq!(err, soroban_sdk::Error::from_contract_error(16));
 }
 
+// Regression test for #98: set_beneficiaries must return ContractError::InvalidBps (code 12)
+// when the beneficiary BPS entries do not sum to exactly 10_000.
+#[test]
+fn test_set_beneficiaries_rejects_invalid_bps() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let b2 = Address::generate(&env);
+    let vault_id = client.create_vault(&owner, &beneficiary, &1000u64);
+
+    // 4_000 + 4_000 = 8_000, not 10_000 — must be rejected
+    let err = client
+        .try_set_beneficiaries(
+            &vault_id,
+            &vec![
+                &env,
+                BeneficiaryEntry { address: beneficiary.clone(), bps: 4_000 },
+                BeneficiaryEntry { address: b2.clone(), bps: 4_000 },
+            ],
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(12));
+}
+
 // ---- Issue #105: set_beneficiaries owner-as-beneficiary guard ----
 
 #[test]
