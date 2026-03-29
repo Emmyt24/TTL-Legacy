@@ -860,6 +860,20 @@ fn test_partial_release_without_multi_beneficiary_sends_to_primary() {
 }
 
 #[test]
+fn test_partial_release_rejected_on_expired_vault() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    client.deposit(&vault_id, &owner, &1_000i128);
+
+    // Advance time past expiry
+    env.ledger().with_mut(|l| l.timestamp += 200);
+
+    // partial_release should fail with VaultExpired
+    assert!(client.try_partial_release(&vault_id, &100i128).is_err());
+}
+
+#[test]
 fn test_update_beneficiary_updates_index() {
     let (env, owner, old_beneficiary, _, _, client) = setup();
     let new_beneficiary = Address::generate(&env);

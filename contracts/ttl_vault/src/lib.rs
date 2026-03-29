@@ -602,6 +602,7 @@ impl TtlVaultContract {
     /// * `ContractError::InvalidAmount` - If amount is not positive
     /// * `ContractError::NotOwner` - If caller is not the vault owner
     /// * `ContractError::AlreadyReleased` - If vault is not in Locked status
+    /// * `ContractError::VaultExpired` - If vault has expired
     /// * `ContractError::InsufficientBalance` - If vault balance is less than amount
     pub fn partial_release(env: Env, vault_id: u64, amount: i128) -> Result<(), ContractError> {
         Self::assert_not_paused(&env);
@@ -612,6 +613,9 @@ impl TtlVaultContract {
         vault.owner.require_auth();
         if vault.status != ReleaseStatus::Locked {
             return Err(ContractError::AlreadyReleased);
+        }
+        if Self::is_expired(env.clone(), vault_id) {
+            return Err(ContractError::VaultExpired);
         }
         if vault.balance < amount {
             return Err(ContractError::InsufficientBalance);
