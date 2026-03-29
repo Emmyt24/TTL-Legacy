@@ -562,7 +562,7 @@ impl TtlVaultContract {
     ///
     /// This function can be called by anyone to monitor vault expiry status.
     /// If the remaining TTL is less than `EXPIRY_WARNING_THRESHOLD` (24 hours),
-    /// a warning event is emitted.
+    /// a warning event is emitted. No event is emitted for Released or Cancelled vaults.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment
@@ -571,9 +571,14 @@ impl TtlVaultContract {
     /// # Returns
     /// The remaining TTL in seconds (0 if expired)
     pub fn ping_expiry(env: Env, vault_id: u64) -> u64 {
-        if Self::try_load_vault(&env, vault_id).is_none() {
-            panic_with_error!(&env, ContractError::VaultNotFound);
+        let vault = Self::try_load_vault(&env, vault_id)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::VaultNotFound));
+        
+        // Only emit events for Locked vaults
+        if vault.status != ReleaseStatus::Locked {
+            return 0;
         }
+        
         let ttl = Self::get_ttl_remaining(env.clone(), vault_id).unwrap_or(0);
         if ttl < EXPIRY_WARNING_THRESHOLD {
             env.events().publish((PING_EXPIRY_TOPIC, vault_id), ttl);

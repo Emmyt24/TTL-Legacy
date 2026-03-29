@@ -893,3 +893,43 @@ fn test_get_admin_before_initialize_returns_not_initialized() {
     // Call get_admin without initialize
     client.get_admin();
 }
+
+
+#[test]
+fn test_ping_expiry_no_event_for_released_vault() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    client.deposit(&vault_id, &owner, &500i128);
+    
+    // Expire the vault
+    env.ledger().with_mut(|l| l.timestamp += 200);
+    client.trigger_release(&vault_id);
+    
+    // ping_expiry should not emit an event for a released vault
+    let events_before = env.events().all();
+    let ttl = client.ping_expiry(&vault_id);
+    let events_after = env.events().all();
+    
+    // No new ping_expiry event should be emitted
+    assert_eq!(ttl, 0);
+    assert_eq!(events_before.len(), events_after.len());
+}
+
+#[test]
+fn test_ping_expiry_no_event_for_cancelled_vault() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    client.deposit(&vault_id, &owner, &500i128);
+    
+    // Cancel the vault
+    client.cancel_vault(&vault_id);
+    
+    // ping_expiry should not emit an event for a cancelled vault
+    let events_before = env.events().all();
+    let ttl = client.ping_expiry(&vault_id);
+    let events_after = env.events().all();
+    
+    // No new ping_expiry event should be emitted
+    assert_eq!(ttl, 0);
+    assert_eq!(events_before.len(), events_after.len());
+}
