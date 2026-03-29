@@ -355,6 +355,63 @@ fn test_partial_release_transfers_amount_to_beneficiary() {
 
 #[test]
 fn test_partial_release_fails_if_insufficient_balance() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    client.deposit(&vault_id, &owner, &100i128);
+
+    let result = client.try_partial_release(&vault_id, &500i128);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_partial_release_fails_after_release() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    client.deposit(&vault_id, &owner, &500i128);
+    env.ledger().with_mut(|l| l.timestamp += 200);
+    client.trigger_release(&vault_id);
+
+    let result = client.try_partial_release(&vault_id, &100i128);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_partial_release_multiple_times_reduces_balance() {
+    let (env, owner, beneficiary, _, token_address, client) = setup();
+    let token_client = token::Client::new(&env, &token_address);
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    client.deposit(&vault_id, &owner, &1_000i128);
+
+    client.partial_release(&vault_id, &200i128);
+    client.partial_release(&vault_id, &300i128);
+
+    assert_eq!(client.get_vault(&vault_id).balance, 500i128);
+    assert_eq!(token_client.balance(&beneficiary), 500i128);
+    assert_eq!(client.get_release_status(&vault_id), ReleaseStatus::Locked);
+}
+
+#[test]
+fn test_partial_release_emits_event() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    client.deposit(&vault_id, &owner, &1_000i128);
+
+    client.partial_release(&vault_id, &400i128);
+
+    let events = env.events().all();
+    let partial_event = events.iter().find(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone().into_val(&env);
+        if topics.len() < 1 {
+            return false;
+        }
+        let topic0: Result<soroban_sdk::Symbol, _> = topics.get(0).unwrap().try_into_val(&env);
+        topic0.map(|s| s == soroban_sdk::symbol_short!("partial")).unwrap_or(false)
+    });
+    assert!(partial_event.is_some(), "partial event not emitted");
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #11)")]
 fn test_update_beneficiary_rejects_owner_as_beneficiary() {
     let (_, owner, beneficiary, _, _, client) = setup();
@@ -646,4 +703,123 @@ fn test_deposit_rejects_balance_overflow() {
     let result = client.try_deposit(&vault_id, &owner, &1i128);
 
     assert!(result.is_err(), "expected overflow error on deposit exceeding i128::MAX");
+}
+
+// ---- trigger_release with multi-beneficiary BPS split ----
+
+#[test]
+fn test_set_beneficiaries_and_trigger_release_splits_funds() {
+    let (env, owner, beneficiary, _, token_address, client) = setup();
+    let token_client = token::Client::new(&env, &token_address);
+
+    let b1 = Address::generate(&env);
+    let b2 = Address::generate(&env);
+    let b3 = Address::generate(&env);
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    client.deposit(&vault_id, &owner, &10_000i128);
+
+    // 50% / 30% / 20%
+    client.set_beneficiaries(
+        &vault_id,
+        &vec![
+            &env,
+            types::BeneficiaryEntry { address: b1.clone(), bps: 5_000 },
+            types::BeneficiaryEntry { address: b2.clone(), bps: 3_000 },
+            types::BeneficiaryEntry { address: b3.clone(), bps: 2_000 },
+        ],
+    );
+
+    env.ledger().with_mut(|l| l.timestamp += 200);
+    client.trigger_release(&vault_id);
+
+    assert_eq!(token_client.balance(&b1), 5_000i128);
+    assert_eq!(token_client.balance(&b2), 3_000i128);
+    assert_eq!(token_client.balance(&b3), 2_000i128);
+
+    // vault balance zeroed — no dust
+    assert_eq!(client.get_vault(&vault_id).balance, 0i128);
+    assert_eq!(client.get_release_status(&vault_id), ReleaseStatus::Released);
+}
+
+#[test]
+fn test_set_beneficiaries_three_way_split_remainder_goes_to_last() {
+    // 10_001 stroops with 50/30/20 split: last entry absorbs rounding remainder
+    let (env, owner, beneficiary, _, token_address, client) = setup();
+    let token_client = token::Client::new(&env, &token_address);
+
+    let b1 = Address::generate(&env);
+    let b2 = Address::generate(&env);
+    let b3 = Address::generate(&env);
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    client.deposit(&vault_id, &owner, &10_001i128);
+
+    client.set_beneficiaries(
+        &vault_id,
+        &vec![
+            &env,
+            types::BeneficiaryEntry { address: b1.clone(), bps: 5_000 },
+            types::BeneficiaryEntry { address: b2.clone(), bps: 3_000 },
+            types::BeneficiaryEntry { address: b3.clone(), bps: 2_000 },
+        ],
+    );
+
+    env.ledger().with_mut(|l| l.timestamp += 200);
+    client.trigger_release(&vault_id);
+
+    // b1 = 10_001 * 5000 / 10000 = 5000 (integer division)
+    // b2 = 10_001 * 3000 / 10000 = 3000
+    // b3 = remainder = 10_001 - 5000 - 3000 = 2001
+    assert_eq!(token_client.balance(&b1), 5_000i128);
+    assert_eq!(token_client.balance(&b2), 3_000i128);
+    assert_eq!(token_client.balance(&b3), 2_001i128);
+
+    // no dust left
+    assert_eq!(client.get_vault(&vault_id).balance, 0i128);
+}
+
+#[test]
+fn test_set_beneficiaries_rejects_invalid_bps() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let b1 = Address::generate(&env);
+    let b2 = Address::generate(&env);
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+
+    // BPS sum = 9_000, not 10_000 — should fail
+    let result = client.try_set_beneficiaries(
+        &vault_id,
+        &vec![
+            &env,
+            types::BeneficiaryEntry { address: b1.clone(), bps: 5_000 },
+            types::BeneficiaryEntry { address: b2.clone(), bps: 4_000 },
+        ],
+    );
+    assert!(result.is_err());
+}
+
+// ---- update_check_in_interval bounds enforcement ----
+
+#[test]
+fn test_update_check_in_interval_respects_min_and_max_bounds() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+
+    // set bounds: min=100, max=1000
+    client.set_min_check_in_interval(&100u64);
+    client.set_max_check_in_interval(&1_000u64);
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &500u64);
+
+    // below min → IntervalTooLow (#14)
+    let err_low = client.try_update_check_in_interval(&vault_id, &50u64);
+    assert!(err_low.is_err());
+
+    // above max → IntervalTooHigh (#15)
+    let err_high = client.try_update_check_in_interval(&vault_id, &2_000u64);
+    assert!(err_high.is_err());
+
+    // within bounds → success
+    client.update_check_in_interval(&vault_id, &750u64);
+    assert_eq!(client.get_vault(&vault_id).check_in_interval, 750u64);
 }
