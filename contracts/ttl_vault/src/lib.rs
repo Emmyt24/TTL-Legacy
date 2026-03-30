@@ -15,9 +15,22 @@ use types::{
 #[cfg(test)]
 mod test;
 
+/// Minimum TTL (in ledgers) before a persistent entry is eligible for extension.
+/// At ~5 s/ledger this is ~83 minutes.
 pub const VAULT_TTL_THRESHOLD: u32 = 1000;
+
+/// Default persistent storage TTL for vault entries, in ledgers.
+/// 200_000 ledgers × 5 s/ledger ≈ 11.6 days.
+/// Used as the floor in `vault_ttl_ledgers`; long-interval vaults get a larger value.
 pub const VAULT_TTL_LEDGERS: u32 = 200_000;
+
+/// Minimum TTL (in ledgers) before instance storage is eligible for extension.
+/// At ~5 s/ledger this is ~83 minutes.
 pub const INSTANCE_TTL_THRESHOLD: u32 = 1000;
+
+/// TTL for instance storage entries, in ledgers.
+/// 200_000 ledgers × 5 s/ledger ≈ 11.6 days.
+/// Extended on every state-mutating call to keep contract instance alive.
 pub const INSTANCE_TTL_LEDGERS: u32 = 200_000;
 
 /// Approximate ledger close time in seconds (Stellar mainnet ~5s).
