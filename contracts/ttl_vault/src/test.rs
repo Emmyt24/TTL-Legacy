@@ -738,7 +738,6 @@ fn test_withdraw_emits_event() {
 }
 
 #[test]
-#[test]
 #[should_panic(expected = "Error(Contract, #4)")]
 fn test_trigger_release_emits_event_with_zero_balance() {
     let (env, owner, beneficiary, _, _, client) = setup();
@@ -960,7 +959,7 @@ fn test_state_mutating_calls_extend_instance_ttl() {
     assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
 
     // withdraw
-    client.withdraw(&vault_id, &1_000);
+    client.withdraw(&vault_id, &owner, &1_000);
     assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
 
     // partial_release
@@ -1028,13 +1027,13 @@ fn test_cancel_vault_removes_from_owner_and_beneficiary_indexes() {
     let (env, owner, beneficiary, _, _, client) = setup();
     let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
 
-    assert_eq!(client.get_vaults_by_owner(&owner, &0u32, &10u32), vec![&env, vault_id]);
-    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_owner(&owner, &None, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &10u32), vec![&env, vault_id]);
 
-    client.cancel_vault(&vault_id);
+    client.cancel_vault(&vault_id, &owner);
 
-    assert_eq!(client.get_vaults_by_owner(&owner, &0u32, &10u32), vec![&env]);
-    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32), vec![&env]);
+    assert_eq!(client.get_vaults_by_owner(&owner, &None, &0u32, &10u32), vec![&env]);
+    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &10u32), vec![&env]);
 }
 
 // ---- Pagination tests ----
@@ -1043,22 +1042,25 @@ fn test_cancel_vault_removes_from_owner_and_beneficiary_indexes() {
 fn test_get_vaults_by_owner_pagination() {
     let (env, owner, beneficiary, _, _, client) = setup();
 
-    let ids: Vec<u64> = (0..5).map(|_| client.create_vault(&owner, &beneficiary, &100u64)).collect();
+    let mut ids = soroban_sdk::Vec::new(&env);
+    for _ in 0..5 {
+        ids.push_back(client.create_vault(&owner, &beneficiary, &100u64));
+    }
 
     // page 0 of size 2 → first two
     assert_eq!(
         client.get_vaults_by_owner(&owner, &None, &0u32, &2u32),
-        vec![&env, ids[0], ids[1]]
+        vec![&env, ids.get(0).unwrap(), ids.get(1).unwrap()]
     );
     // page 1 of size 2 → next two
     assert_eq!(
         client.get_vaults_by_owner(&owner, &None, &1u32, &2u32),
-        vec![&env, ids[2], ids[3]]
+        vec![&env, ids.get(2).unwrap(), ids.get(3).unwrap()]
     );
     // page 2 of size 2 → last one
     assert_eq!(
         client.get_vaults_by_owner(&owner, &None, &2u32, &2u32),
-        vec![&env, ids[4]]
+        vec![&env, ids.get(4).unwrap()]
     );
     // out-of-range page → empty
     assert_eq!(
@@ -1076,19 +1078,22 @@ fn test_get_vaults_by_owner_pagination() {
 fn test_get_vaults_by_beneficiary_pagination() {
     let (env, owner, beneficiary, _, _, client) = setup();
 
-    let ids: Vec<u64> = (0..5).map(|_| client.create_vault(&owner, &beneficiary, &100u64)).collect();
+    let mut ids = soroban_sdk::Vec::new(&env);
+    for _ in 0..5 {
+        ids.push_back(client.create_vault(&owner, &beneficiary, &100u64));
+    }
 
     assert_eq!(
         client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &2u32),
-        vec![&env, ids[0], ids[1]]
+        vec![&env, ids.get(0).unwrap(), ids.get(1).unwrap()]
     );
     assert_eq!(
         client.get_vaults_by_beneficiary(&beneficiary, &None, &1u32, &2u32),
-        vec![&env, ids[2], ids[3]]
+        vec![&env, ids.get(2).unwrap(), ids.get(3).unwrap()]
     );
     assert_eq!(
         client.get_vaults_by_beneficiary(&beneficiary, &None, &2u32, &2u32),
-        vec![&env, ids[4]]
+        vec![&env, ids.get(4).unwrap()]
     );
     assert_eq!(
         client.get_vaults_by_beneficiary(&beneficiary, &None, &10u32, &2u32),
