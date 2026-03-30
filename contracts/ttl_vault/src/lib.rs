@@ -93,6 +93,7 @@ impl TtlVaultContract {
         env.storage().instance().set(&DataKey::TokenAddress, &xlm_token);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage().instance().set(&DataKey::Version, &String::from_str(&env, "1.0.0"));
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
     }
 
@@ -232,6 +233,14 @@ impl TtlVaultContract {
             .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(&env, ContractError::VaultNotFound))
+    }
+
+    /// Returns the contract version string set during initialization.
+    pub fn get_version(env: Env) -> String {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NotInitialized))
     }
 
     /// Proposes a new admin. The proposed admin must call `accept_admin` to complete the transfer.

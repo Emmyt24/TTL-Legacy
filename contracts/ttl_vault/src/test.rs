@@ -1275,3 +1275,11 @@ fn test_create_vault_returns_interval_too_high_error() {
         .unwrap();
     assert_eq!(err, soroban_sdk::Error::from_contract_error(15));
 }
+
+// ---- Issue #234: get_version ----
+
+#[test]
+fn test_get_version_returns_correct_version() {
+    let (env, _, _, _, _, client) = setup();
+    assert_eq!(client.get_version(), soroban_sdk::String::from_str(&env, "1.0.0"));
+}
