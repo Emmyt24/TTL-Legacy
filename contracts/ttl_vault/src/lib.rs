@@ -40,6 +40,7 @@ fn vault_ttl_ledgers(check_in_interval: u64) -> u32 {
 #[repr(u32)]
 pub enum ContractError {
     AlreadyInitialized = 1,
+    NotInitialized = 21,
     InvalidInterval = 2,
     VaultNotFound = 3,
     EmptyVault = 4,
@@ -87,7 +88,7 @@ impl TtlVaultContract {
             panic_with_error!(&env, ContractError::AlreadyInitialized);
         }
         if xlm_token == admin {
-            panic_with_error!(&env, ContractError::BalanceOverflow);
+            panic_with_error!(&env, ContractError::InvalidAdmin);
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::TokenAddress, &xlm_token);

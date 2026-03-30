@@ -310,13 +310,13 @@ fn test_transfer_ownership_preserves_beneficiary_index() {
     let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
 
     // beneficiary index contains the vault before transfer
-    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &10u32), vec![&env, vault_id]);
 
     client.transfer_ownership(&vault_id, &owner, &new_owner);
 
     // vault.beneficiary is unchanged — index must still be intact
     assert_eq!(client.get_vault(&vault_id).beneficiary, beneficiary);
-    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &10u32), vec![&env, vault_id]);
 }
 
 #[test]
@@ -777,6 +777,7 @@ fn test_set_beneficiaries_rejects_invalid_bps() {
     let err = client
         .try_set_beneficiaries(
             &vault_id,
+            &owner,
             &vec![
                 &env,
                 BeneficiaryEntry { address: beneficiary.clone(), bps: 4_000 },
@@ -785,7 +786,7 @@ fn test_set_beneficiaries_rejects_invalid_bps() {
         )
         .unwrap_err()
         .unwrap();
-    assert_eq!(err, soroban_sdk::Error::from_contract_error(12));
+    assert_eq!(err, ContractError::InvalidBps);
 }
 
 // ---- Issue #105: set_beneficiaries owner-as-beneficiary guard ----
@@ -930,15 +931,15 @@ fn test_update_beneficiary_updates_index() {
     let vault_id = client.create_vault(&owner, &old_beneficiary, &100u64);
 
     // old beneficiary sees the vault, new one does not
-    assert_eq!(client.get_vaults_by_beneficiary(&old_beneficiary, &0u32, &10u32), vec![&env, vault_id]);
-    assert_eq!(client.get_vaults_by_beneficiary(&new_beneficiary, &0u32, &10u32), vec![&env]);
+    assert_eq!(client.get_vaults_by_beneficiary(&old_beneficiary, &None, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_beneficiary(&new_beneficiary, &None, &0u32, &10u32), vec![&env]);
 
     client.update_beneficiary(&vault_id, &owner, &new_beneficiary);
 
     // old beneficiary no longer sees the vault
-    assert_eq!(client.get_vaults_by_beneficiary(&old_beneficiary, &0u32, &10u32), vec![&env]);
+    assert_eq!(client.get_vaults_by_beneficiary(&old_beneficiary, &None, &0u32, &10u32), vec![&env]);
     // new beneficiary now sees the vault
-    assert_eq!(client.get_vaults_by_beneficiary(&new_beneficiary, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_beneficiary(&new_beneficiary, &None, &0u32, &10u32), vec![&env, vault_id]);
 }
 
 #[test]
@@ -960,7 +961,7 @@ fn test_state_mutating_calls_extend_instance_ttl() {
     assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
 
     // withdraw
-    client.withdraw(&vault_id, &1_000);
+    client.withdraw(&vault_id, &owner, &1_000);
     assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
 
     // partial_release
@@ -1003,11 +1004,12 @@ fn test_get_active_vaults_by_beneficiary_excludes_released() {
     );
     // historical list also contains it
     assert_eq!(
-        client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32),
+        client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &10u32),
         vec![&env, vault_id]
     );
 
     // expire and release
+    client.deposit(&vault_id, &owner, &1_000i128);
     env.ledger().with_mut(|l| l.timestamp += 101);
     client.trigger_release(&vault_id);
 
@@ -1018,7 +1020,7 @@ fn test_get_active_vaults_by_beneficiary_excludes_released() {
     );
     // historical list still contains the released vault
     assert_eq!(
-        client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32),
+        client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &10u32),
         vec![&env, vault_id]
     );
 }
@@ -1028,13 +1030,13 @@ fn test_cancel_vault_removes_from_owner_and_beneficiary_indexes() {
     let (env, owner, beneficiary, _, _, client) = setup();
     let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
 
-    assert_eq!(client.get_vaults_by_owner(&owner, &0u32, &10u32), vec![&env, vault_id]);
-    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_owner(&owner, &None, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &10u32), vec![&env, vault_id]);
 
-    client.cancel_vault(&vault_id);
+    client.cancel_vault(&vault_id, &owner);
 
-    assert_eq!(client.get_vaults_by_owner(&owner, &0u32, &10u32), vec![&env]);
-    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32), vec![&env]);
+    assert_eq!(client.get_vaults_by_owner(&owner, &None, &0u32, &10u32), vec![&env]);
+    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &10u32), vec![&env]);
 }
 
 // ---- Pagination tests ----
@@ -1043,22 +1045,26 @@ fn test_cancel_vault_removes_from_owner_and_beneficiary_indexes() {
 fn test_get_vaults_by_owner_pagination() {
     let (env, owner, beneficiary, _, _, client) = setup();
 
-    let ids: Vec<u64> = (0..5).map(|_| client.create_vault(&owner, &beneficiary, &100u64)).collect();
+    let id0 = client.create_vault(&owner, &beneficiary, &100u64);
+    let id1 = client.create_vault(&owner, &beneficiary, &100u64);
+    let id2 = client.create_vault(&owner, &beneficiary, &100u64);
+    let id3 = client.create_vault(&owner, &beneficiary, &100u64);
+    let id4 = client.create_vault(&owner, &beneficiary, &100u64);
 
     // page 0 of size 2 → first two
     assert_eq!(
         client.get_vaults_by_owner(&owner, &None, &0u32, &2u32),
-        vec![&env, ids[0], ids[1]]
+        vec![&env, id0, id1]
     );
     // page 1 of size 2 → next two
     assert_eq!(
         client.get_vaults_by_owner(&owner, &None, &1u32, &2u32),
-        vec![&env, ids[2], ids[3]]
+        vec![&env, id2, id3]
     );
     // page 2 of size 2 → last one
     assert_eq!(
         client.get_vaults_by_owner(&owner, &None, &2u32, &2u32),
-        vec![&env, ids[4]]
+        vec![&env, id4]
     );
     // out-of-range page → empty
     assert_eq!(
@@ -1076,19 +1082,23 @@ fn test_get_vaults_by_owner_pagination() {
 fn test_get_vaults_by_beneficiary_pagination() {
     let (env, owner, beneficiary, _, _, client) = setup();
 
-    let ids: Vec<u64> = (0..5).map(|_| client.create_vault(&owner, &beneficiary, &100u64)).collect();
+    let id0 = client.create_vault(&owner, &beneficiary, &100u64);
+    let id1 = client.create_vault(&owner, &beneficiary, &100u64);
+    let id2 = client.create_vault(&owner, &beneficiary, &100u64);
+    let id3 = client.create_vault(&owner, &beneficiary, &100u64);
+    let id4 = client.create_vault(&owner, &beneficiary, &100u64);
 
     assert_eq!(
         client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &2u32),
-        vec![&env, ids[0], ids[1]]
+        vec![&env, id0, id1]
     );
     assert_eq!(
         client.get_vaults_by_beneficiary(&beneficiary, &None, &1u32, &2u32),
-        vec![&env, ids[2], ids[3]]
+        vec![&env, id2, id3]
     );
     assert_eq!(
         client.get_vaults_by_beneficiary(&beneficiary, &None, &2u32, &2u32),
-        vec![&env, ids[4]]
+        vec![&env, id4]
     );
     assert_eq!(
         client.get_vaults_by_beneficiary(&beneficiary, &None, &10u32, &2u32),
@@ -1113,7 +1123,7 @@ fn test_withdraw_rejected_on_cancelled_vault() {
         .try_withdraw(&vault_id, &owner, &1i128)
         .unwrap_err()
         .unwrap();
-    assert_eq!(err, soroban_sdk::Error::from_contract_error(7));
+    assert_eq!(err, ContractError::AlreadyReleased);
 }
 
 #[test]
@@ -1131,5 +1141,5 @@ fn test_withdraw_rejected_on_released_vault() {
         .try_withdraw(&vault_id, &owner, &1i128)
         .unwrap_err()
         .unwrap();
-    assert_eq!(err, soroban_sdk::Error::from_contract_error(7));
+    assert_eq!(err, ContractError::AlreadyReleased);
 }
