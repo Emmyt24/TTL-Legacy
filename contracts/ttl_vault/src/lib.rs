@@ -357,6 +357,7 @@ impl TtlVaultContract {
         }
         vault.last_check_in = env.ledger().timestamp();
         Self::save_vault(&env, vault_id, &vault);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
         env.events().publish((CHECK_IN_TOPIC, vault_id), vault.last_check_in);
         Ok(())
     }
@@ -1060,6 +1061,7 @@ impl TtlVaultContract {
         vault.balance = 0;
         vault.status = ReleaseStatus::Cancelled;
         Self::save_vault(&env, vault_id, &vault);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
         env.events().publish((CANCEL_TOPIC, vault_id), (vault.owner, refund_amount));
         Ok(())
     }
