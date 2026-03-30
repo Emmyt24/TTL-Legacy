@@ -79,6 +79,16 @@ fn test_vault_count_view() {
 }
 
 #[test]
+fn test_vault_count_not_incremented_on_failed_create() {
+    let (env, owner, _beneficiary, _, _, client) = setup();
+
+    assert_eq!(client.vault_count(), 0);
+
+    assert!(client.try_create_vault(&owner, &owner, &100u64).is_err()); // InvalidBeneficiary must not mutate count
+    assert_eq!(client.vault_count(), 0);
+}
+
+#[test]
 fn test_vault_exists_for_existing_and_missing_ids() {
     let (_, owner, beneficiary, _, _, client) = setup();
 
@@ -777,6 +787,7 @@ fn test_set_beneficiaries_rejects_invalid_bps() {
     let err = client
         .try_set_beneficiaries(
             &vault_id,
+            &owner,
             &vec![
                 &env,
                 BeneficiaryEntry { address: beneficiary.clone(), bps: 4_000 },
@@ -785,7 +796,7 @@ fn test_set_beneficiaries_rejects_invalid_bps() {
         )
         .unwrap_err()
         .unwrap();
-    assert_eq!(err, soroban_sdk::Error::from_contract_error(12));
+    assert_eq!(err, ContractError::InvalidBps);
 }
 
 // ---- Issue #105: set_beneficiaries owner-as-beneficiary guard ----
@@ -943,7 +954,7 @@ fn test_update_beneficiary_updates_index() {
 
 
 #[test]
-#[should_panic(expected = "Error(Contract, #20)")]
+#[should_panic(expected = "Error(Contract, #3)")]
 fn test_create_vault_before_initialize_returns_not_initialized() {
     let env = Env::default();
     env.mock_all_auths();
@@ -956,7 +967,7 @@ fn test_create_vault_before_initialize_returns_not_initialized() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #20)")]
+#[should_panic(expected = "Error(Contract, #3)")]
 fn test_deposit_before_initialize_returns_not_initialized() {
     let env = Env::default();
     env.mock_all_auths();
@@ -968,7 +979,7 @@ fn test_deposit_before_initialize_returns_not_initialized() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #20)")]
+#[should_panic(expected = "Error(Contract, #3)")]
 fn test_get_admin_before_initialize_returns_not_initialized() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1006,7 +1017,7 @@ fn test_ping_expiry_no_event_for_cancelled_vault() {
     client.deposit(&vault_id, &owner, &500i128);
     
     // Cancel the vault
-    client.cancel_vault(&vault_id);
+    client.cancel_vault(&vault_id, &owner);
     
     // ping_expiry should not emit an event for a cancelled vault
     let events_before = env.events().all();
@@ -1091,7 +1102,7 @@ fn test_get_vaults_by_owner_with_cancelled_status_filter() {
 
     let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
     client.deposit(&vault_id, &owner, &500i128);
-    client.cancel_vault(&vault_id);
+    client.cancel_vault(&vault_id, &owner);
     
     // Only cancelled vaults
     assert_eq!(
@@ -1202,7 +1213,7 @@ fn test_cancel_vault_refunds_full_balance_to_owner() {
     client.deposit(&vault_id, &owner, &deposit_amount);
 
     let owner_balance_before = token_client.balance(&owner);
-    client.cancel_vault(&vault_id);
+    client.cancel_vault(&vault_id, &owner);
     let owner_balance_after = token_client.balance(&owner);
 
     assert_eq!(owner_balance_after - owner_balance_before, deposit_amount);
@@ -1210,7 +1221,7 @@ fn test_cancel_vault_refunds_full_balance_to_owner() {
     assert_eq!(client.get_release_status(&vault_id), ReleaseStatus::Cancelled);
 
     // Second cancel_vault call should fail
-    assert!(client.try_cancel_vault(&vault_id).is_err());
+    assert!(client.try_cancel_vault(&vault_id, &owner).is_err());
 }
 
 #[test]
@@ -1221,20 +1232,19 @@ fn test_transfer_ownership_updates_owner_index_and_blocks_old_owner() {
     let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
 
     // old owner sees the vault
-    assert_eq!(client.get_vaults_by_owner(&owner, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_owner(&owner, &None, &0u32, &10u32), vec![&env, vault_id]);
     // new owner does not see the vault yet
-    assert_eq!(client.get_vaults_by_owner(&new_owner, &0u32, &10u32), vec![&env]);
+    assert_eq!(client.get_vaults_by_owner(&new_owner, &None, &0u32, &10u32), vec![&env]);
 
     client.transfer_ownership(&vault_id, &owner, &new_owner);
 
     // old owner no longer sees the vault
-    assert_eq!(client.get_vaults_by_owner(&owner, &0u32, &10u32), vec![&env]);
+    assert_eq!(client.get_vaults_by_owner(&owner, &None, &0u32, &10u32), vec![&env]);
     // new owner now sees the vault
-    assert_eq!(client.get_vaults_by_owner(&new_owner, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_owner(&new_owner, &None, &0u32, &10u32), vec![&env, vault_id]);
 
     // old owner cannot call check_in
     assert!(client.try_check_in(&vault_id, &owner).is_err());
-}
 }
 
 // Regression test for #96: create_vault must assign sequential, non-duplicate vault IDs.
