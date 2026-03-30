@@ -332,6 +332,7 @@ fn test_cancel_vault_refunds_owner_and_marks_cancelled() {
     client.cancel_vault(&vault_id, &owner);
     assert_eq!(token_client.balance(&owner), 1_000_000i128);
     assert_eq!(client.get_release_status(&vault_id), ReleaseStatus::Cancelled);
+    assert_eq!(client.get_vault(&vault_id).balance, 0i128);
 }
 
 #[test]
@@ -1132,4 +1133,46 @@ fn test_withdraw_rejected_on_released_vault() {
         .unwrap_err()
         .unwrap();
     assert_eq!(err, soroban_sdk::Error::from_contract_error(7));
+}
+
+// ---- Issue: ping_expiry on non-existent vault ----
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_ping_expiry_panics_for_nonexistent_vault() {
+    let (_, _, _, _, _, client) = setup();
+    // vault ID 999 was never created — must panic with VaultNotFound (#3)
+    client.ping_expiry(&999u64);
+}
+
+// ---- Issue: update_check_in_interval respects admin-set min/max ----
+
+#[test]
+fn test_update_check_in_interval_respects_admin_min_max() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+
+    // Set admin bounds: min=60s, max=3_600s
+    client.set_min_check_in_interval(&60u64);
+    client.set_max_check_in_interval(&3_600u64);
+
+    // Create vault at a valid interval within bounds
+    let vault_id = client.create_vault(&owner, &beneficiary, &1_800u64);
+
+    // Below min → IntervalTooLow (#14)
+    let err = client
+        .try_update_check_in_interval(&vault_id, &30u64)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(14));
+
+    // Above max → IntervalTooHigh (#15)
+    let err = client
+        .try_update_check_in_interval(&vault_id, &7_200u64)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(15));
+
+    // Within bounds → success
+    client.update_check_in_interval(&vault_id, &600u64);
+    assert_eq!(client.get_vault(&vault_id).check_in_interval, 600u64);
 }
