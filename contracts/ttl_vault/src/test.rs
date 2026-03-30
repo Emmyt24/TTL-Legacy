@@ -1448,3 +1448,11 @@ fn test_batch_deposit_invalid_vault_id_in_middle_reverts_entirely() {
     // no tokens transferred
     assert_eq!(token_client.balance(&owner), 1_000_000i128);
 }
+
+// ---- Issue #234: get_version ----
+
+#[test]
+fn test_get_version_returns_correct_version() {
+    let (env, _, _, _, _, client) = setup();
+    assert_eq!(client.get_version(), soroban_sdk::String::from_str(&env, "1.0.0"));
+}
