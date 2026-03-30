@@ -1276,3 +1276,129 @@ fn test_create_vault_returns_interval_too_high_error() {
         .unwrap();
     assert_eq!(err, soroban_sdk::Error::from_contract_error(15));
 }
+
+#[test]
+fn test_withdraw_rejected_on_cancelled_vault() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    // cancel_vault refunds and marks status = Cancelled
+    client.cancel_vault(&vault_id, &owner);
+
+    // Any withdraw attempt on a Cancelled vault must return AlreadyReleased (#7)
+    let err = client
+        .try_withdraw(&vault_id, &owner, &1i128)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(7));
+}
+
+#[test]
+fn test_withdraw_rejected_on_released_vault() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    client.deposit(&vault_id, &owner, &500i128);
+    // advance past check-in interval to expire the vault
+    env.ledger().with_mut(|l| l.timestamp += 200);
+    client.trigger_release(&vault_id);
+
+    // Any withdraw attempt on a Released vault must return AlreadyReleased (#7)
+    let err = client
+        .try_withdraw(&vault_id, &owner, &1i128)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(7));
+}
+
+#[test]
+fn test_batch_deposit_three_vaults_all_balances_updated() {
+    let (env, owner, beneficiary, _, token_address, client) = setup();
+
+    let v1 = client.create_vault(&owner, &beneficiary, &100u64);
+    let v2 = client.create_vault(&owner, &beneficiary, &100u64);
+    let v3 = client.create_vault(&owner, &beneficiary, &100u64);
+    let token_client = token::Client::new(&env, &token_address);
+
+    client.batch_deposit(
+        &owner,
+        &vec![&env, (v1, 100i128), (v2, 200i128), (v3, 300i128)],
+    );
+
+    assert_eq!(client.get_vault(&v1).balance, 100i128);
+    assert_eq!(client.get_vault(&v2).balance, 200i128);
+    assert_eq!(client.get_vault(&v3).balance, 300i128);
+    assert_eq!(token_client.balance(&owner), 999_400i128);
+}
+
+#[test]
+fn test_batch_deposit_invalid_vault_id_in_middle_reverts_entirely() {
+    let (env, owner, beneficiary, _, token_address, client) = setup();
+
+    let v1 = client.create_vault(&owner, &beneficiary, &100u64);
+    let v3 = client.create_vault(&owner, &beneficiary, &100u64);
+    let invalid_id = 999u64;
+    let token_client = token::Client::new(&env, &token_address);
+
+    // invalid vault ID sits in the middle of the batch
+    assert!(
+        client
+            .try_batch_deposit(
+                &owner,
+                &vec![&env, (v1, 100i128), (invalid_id, 200i128), (v3, 300i128)],
+            )
+            .is_err()
+    );
+
+    // no partial state: both valid vaults must remain at zero
+    assert_eq!(client.get_vault(&v1).balance, 0i128);
+    assert_eq!(client.get_vault(&v3).balance, 0i128);
+    // no tokens transferred
+    assert_eq!(token_client.balance(&owner), 1_000_000i128);
+}
+
+#[test]
+fn test_batch_deposit_three_vaults_all_balances_updated() {
+    let (env, owner, beneficiary, _, token_address, client) = setup();
+
+    let v1 = client.create_vault(&owner, &beneficiary, &100u64);
+    let v2 = client.create_vault(&owner, &beneficiary, &100u64);
+    let v3 = client.create_vault(&owner, &beneficiary, &100u64);
+    let token_client = token::Client::new(&env, &token_address);
+
+    client.batch_deposit(
+        &owner,
+        &vec![&env, (v1, 100i128), (v2, 200i128), (v3, 300i128)],
+    );
+
+    assert_eq!(client.get_vault(&v1).balance, 100i128);
+    assert_eq!(client.get_vault(&v2).balance, 200i128);
+    assert_eq!(client.get_vault(&v3).balance, 300i128);
+    assert_eq!(token_client.balance(&owner), 999_400i128);
+}
+
+#[test]
+fn test_batch_deposit_invalid_vault_id_in_middle_reverts_entirely() {
+    let (env, owner, beneficiary, _, token_address, client) = setup();
+
+    let v1 = client.create_vault(&owner, &beneficiary, &100u64);
+    let v3 = client.create_vault(&owner, &beneficiary, &100u64);
+    let invalid_id = 999u64;
+    let token_client = token::Client::new(&env, &token_address);
+
+    // invalid vault ID sits in the middle of the batch
+    assert!(
+        client
+            .try_batch_deposit(
+                &owner,
+                &vec![&env, (v1, 100i128), (invalid_id, 200i128), (v3, 300i128)],
+            )
+            .is_err()
+    );
+
+    // no partial state: both valid vaults must remain at zero
+    assert_eq!(client.get_vault(&v1).balance, 0i128);
+    assert_eq!(client.get_vault(&v3).balance, 0i128);
+    // no tokens transferred
+    assert_eq!(token_client.balance(&owner), 1_000_000i128);
+}
