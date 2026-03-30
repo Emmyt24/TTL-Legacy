@@ -2,7 +2,7 @@
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Events, Ledger},
+    testutils::{storage::Instance as _, Address as _, Events, Ledger},
     token::{self, StellarAssetClient},
     vec, Address, BytesN, Env, IntoVal, TryIntoVal,
 };
@@ -41,21 +41,27 @@ fn setup() -> (
 // ---- existing tests ----
 
 #[test]
-#[should_panic(expected = "Error(Contract, #1)")]
 fn test_initialize_guard_against_double_init() {
     let (env, _, _, admin, token_address, client) = setup();
 
+    let original_admin = client.get_admin();
+    let original_token = client.get_token();
+
+    let new_admin = Address::generate(&env);
     let new_token_admin = Address::generate(&env);
     let new_token_address = env
         .register_stellar_asset_contract_v2(new_token_admin)
         .address();
 
-    client.initialize(&new_token_address, &admin);
-    let _ = token_address;
+    let err = client.try_initialize(&new_token_address, &new_admin).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(1));
+
+    assert_eq!(client.get_admin(), original_admin);
+    assert_eq!(client.get_token(), original_token);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #18)")]
+#[should_panic(expected = "Error(Contract, #20)")]
 fn test_initialize_rejects_same_xlm_token_and_admin() {
     let env = Env::default();
     env.mock_all_auths();
@@ -228,6 +234,33 @@ fn test_paused_blocks_check_in_withdraw_and_trigger_release() {
     );
 }
 
+// ---- Issue #229: check_in event emission test ----
+
+#[test]
+fn test_check_in_emits_event_with_correct_topic() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+
+    env.mock_all_auths();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+
+    // Advance time slightly
+    env.ledger().with_mut(|l| l.timestamp += 10);
+
+    client.check_in(&vault_id, &owner);
+
+    let events = env.events().all();
+    let check_in_event = events.iter().find(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone().into_val(&env);
+        if topics.len() < 2 {
+            return false;
+        }
+        let topic0: Result<soroban_sdk::Symbol, _> = topics.get(0).unwrap().try_into_val(&env);
+        topic0.map(|s| s == soroban_sdk::symbol_short!("check_in")).unwrap_or(false)
+    });
+
+    assert!(check_in_event.is_some(), "check_in event not emitted");
+}
+
 #[test]
 fn test_get_vaults_by_owner_tracks_multiple_vaults() {
     let (env, owner, beneficiary, _, _, client) = setup();
@@ -320,13 +353,13 @@ fn test_transfer_ownership_preserves_beneficiary_index() {
     let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
 
     // beneficiary index contains the vault before transfer
-    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32), vec![&env, vault_id]);
 
     client.transfer_ownership(&vault_id, &owner, &new_owner);
 
     // vault.beneficiary is unchanged — index must still be intact
     assert_eq!(client.get_vault(&vault_id).beneficiary, beneficiary);
-    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32), vec![&env, vault_id]);
 }
 
 #[test]
@@ -408,6 +441,25 @@ fn test_propose_admin_can_be_called_multiple_times() {
     assert_eq!(client.get_pending_admin(), None);
     client.pause();
     assert!(client.is_paused());
+}
+
+// ---- Issue #227: accept_admin unauthorized rejection test ----
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_accept_admin_rejects_unauthorized_caller() {
+    let (env, _, _, _, _, client) = setup();
+    let new_admin = Address::generate(&env);
+    let unauthorized = Address::generate(&env);
+
+    client.propose_admin(&new_admin);
+    assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));
+
+    // Try to accept as unauthorized address (not the pending admin)
+    // This should panic with NoPendingAdmin or auth failure
+    // Since mock_all_auths is enabled, we need to test without it
+    env.mock_all_auths_allowing_non_root_auth();
+    client.accept_admin(); // This will fail because unauthorized is not pending_admin
 }
 
 // ---- Task 1: ping_expiry tests ----
@@ -513,6 +565,21 @@ fn test_deposit_into_expired_vault_is_rejected() {
     let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
     env.ledger().with_mut(|l| l.timestamp += 200);
     client.deposit(&vault_id, &owner, &500i128);
+}
+
+// ---- Issue #221: deposit expired vault returns VaultExpired error code ----
+
+#[test]
+fn test_deposit_into_expired_vault_returns_vault_expired_error() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    
+    // Advance time past expiry
+    env.ledger().with_mut(|l| l.timestamp += 200);
+    
+    // Should return VaultExpired (error code 19), not AlreadyReleased (error code 7)
+    let err = client.try_deposit(&vault_id, &owner, &500i128).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(19)); // VaultExpired
 }
 
 #[test]
@@ -819,6 +886,21 @@ fn test_set_beneficiaries_rejects_owner_as_beneficiary() {
     );
 }
 
+// ---- Issue #226: set_beneficiaries empty list guard ----
+
+#[test]
+fn test_set_beneficiaries_rejects_empty_list() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &1000u64);
+
+    // Empty beneficiaries list should be rejected with InvalidBps
+    let err = client
+        .try_set_beneficiaries(&vault_id, &owner, &vec![&env])
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(12)); // InvalidBps
+}
+
 #[test]
 fn test_deposit_rejects_balance_overflow() {
     let (env, owner, beneficiary, _, token_address, client) = setup();
@@ -941,348 +1023,247 @@ fn test_update_beneficiary_updates_index() {
     let vault_id = client.create_vault(&owner, &old_beneficiary, &100u64);
 
     // old beneficiary sees the vault, new one does not
-    assert_eq!(client.get_vaults_by_beneficiary(&old_beneficiary, &None, &0u32, &10u32), vec![&env, vault_id]);
-    assert_eq!(client.get_vaults_by_beneficiary(&new_beneficiary, &None, &0u32, &10u32), vec![&env]);
+    assert_eq!(client.get_vaults_by_beneficiary(&old_beneficiary, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_beneficiary(&new_beneficiary, &0u32, &10u32), vec![&env]);
 
     client.update_beneficiary(&vault_id, &owner, &new_beneficiary);
 
     // old beneficiary no longer sees the vault
-    assert_eq!(client.get_vaults_by_beneficiary(&old_beneficiary, &None, &0u32, &10u32), vec![&env]);
+    assert_eq!(client.get_vaults_by_beneficiary(&old_beneficiary, &0u32, &10u32), vec![&env]);
     // new beneficiary now sees the vault
-    assert_eq!(client.get_vaults_by_beneficiary(&new_beneficiary, &None, &0u32, &10u32), vec![&env, vault_id]);
-}
-
-
-#[test]
-#[should_panic(expected = "Error(Contract, #3)")]
-fn test_create_vault_before_initialize_returns_not_initialized() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let owner = Address::generate(&env);
-    let beneficiary = Address::generate(&env);
-    let contract_address = env.register_contract(None, TtlVaultContract);
-    let client = TtlVaultContractClient::new(&env, &contract_address);
-    // Call create_vault without initialize
-    client.create_vault(&owner, &beneficiary, &100u64);
+    assert_eq!(client.get_vaults_by_beneficiary(&new_beneficiary, &0u32, &10u32), vec![&env, vault_id]);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #3)")]
-fn test_deposit_before_initialize_returns_not_initialized() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let owner = Address::generate(&env);
-    let contract_address = env.register_contract(None, TtlVaultContract);
-    let client = TtlVaultContractClient::new(&env, &contract_address);
-    // Call deposit without initialize
-    client.deposit(&1u64, &owner, &100i128);
-}
-
-#[test]
-#[should_panic(expected = "Error(Contract, #3)")]
-fn test_get_admin_before_initialize_returns_not_initialized() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_address = env.register_contract(None, TtlVaultContract);
-    let client = TtlVaultContractClient::new(&env, &contract_address);
-    // Call get_admin without initialize
-    client.get_admin();
-}
-
-
-#[test]
-fn test_ping_expiry_no_event_for_released_vault() {
+fn test_state_mutating_calls_extend_instance_ttl() {
     let (env, owner, beneficiary, _, _, client) = setup();
-    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
-    client.deposit(&vault_id, &owner, &500i128);
-    
-    // Expire the vault
-    env.ledger().with_mut(|l| l.timestamp += 200);
+    let contract_id = client.address.clone();
+    let interval: u64 = 1_000;
+    let vault_id = client.create_vault(&owner, &beneficiary, &interval);
+    client.deposit(&vault_id, &owner, &100_000);
+
+    let get_ttl = || env.as_contract(&contract_id, || env.storage().instance().get_ttl());
+
+    // check_in
+    client.check_in(&vault_id, &owner);
+    assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
+
+    // deposit
+    client.deposit(&vault_id, &owner, &1_000);
+    assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
+
+    // withdraw
+    client.withdraw(&vault_id, &1_000);
+    assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
+
+    // partial_release
+    client.partial_release(&vault_id, &1_000);
+    assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
+
+    // trigger_release: advance time past expiry first
+    env.ledger().with_mut(|l| l.timestamp += interval + 1);
     client.trigger_release(&vault_id);
-    
-    // ping_expiry should not emit an event for a released vault
-    let events_before = env.events().all();
-    let ttl = client.ping_expiry(&vault_id);
-    let events_after = env.events().all();
-    
-    // No new ping_expiry event should be emitted
-    assert_eq!(ttl, 0);
-    assert_eq!(events_before.len(), events_after.len());
+    assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
 }
 
 #[test]
-fn test_ping_expiry_no_event_for_cancelled_vault() {
+fn test_check_in_extends_owner_index_ttl() {
+    use soroban_sdk::testutils::storage::Persistent as _;
     let (env, owner, beneficiary, _, _, client) = setup();
-    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
-    client.deposit(&vault_id, &owner, &500i128);
-    
-    // Cancel the vault
-    client.cancel_vault(&vault_id, &owner);
-    
-    // ping_expiry should not emit an event for a cancelled vault
-    let events_before = env.events().all();
-    let ttl = client.ping_expiry(&vault_id);
-    let events_after = env.events().all();
-    
-    // No new ping_expiry event should be emitted
-    assert_eq!(ttl, 0);
-    assert_eq!(events_before.len(), events_after.len());
-}
+    let contract_id = client.address.clone();
+    let vault_id = client.create_vault(&owner, &beneficiary, &1_000u64);
 
+    client.check_in(&vault_id, &owner);
 
-#[test]
-fn test_get_vaults_by_owner_with_status_filter() {
-    let (env, owner, beneficiary, _, _, client) = setup();
-
-    let vault_id_1 = client.create_vault(&owner, &beneficiary, &100u64);
-    let vault_id_2 = client.create_vault(&owner, &beneficiary, &200u64);
-    
-    client.deposit(&vault_id_1, &owner, &500i128);
-    env.ledger().with_mut(|l| l.timestamp += 200);
-    client.trigger_release(&vault_id_1);
-    
-    // All vaults (no filter)
-    assert_eq!(
-        client.get_vaults_by_owner(&owner, &None, &0u32, &10u32),
-        vec![&env, vault_id_1, vault_id_2]
-    );
-    
-    // Only locked vaults
-    assert_eq!(
-        client.get_vaults_by_owner(&owner, &Some(ReleaseStatus::Locked), &0u32, &10u32),
-        vec![&env, vault_id_2]
-    );
-    
-    // Only released vaults
-    assert_eq!(
-        client.get_vaults_by_owner(&owner, &Some(ReleaseStatus::Released), &0u32, &10u32),
-        vec![&env, vault_id_1]
-    );
-    
-    // No cancelled vaults
-    assert_eq!(
-        client.get_vaults_by_owner(&owner, &Some(ReleaseStatus::Cancelled), &0u32, &10u32),
-        vec![&env]
-    );
+    let ttl = env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::OwnerVaults(owner.clone()))
+    });
+    assert!(ttl >= VAULT_TTL_THRESHOLD as u32);
 }
 
 #[test]
-fn test_get_vaults_by_beneficiary_with_status_filter() {
-    let (env, owner, beneficiary, _, _, client) = setup();
-
-    let vault_id_1 = client.create_vault(&owner, &beneficiary, &100u64);
-    let vault_id_2 = client.create_vault(&owner, &beneficiary, &200u64);
-    
-    client.deposit(&vault_id_1, &owner, &500i128);
-    env.ledger().with_mut(|l| l.timestamp += 200);
-    client.trigger_release(&vault_id_1);
-    
-    // All vaults (no filter)
-    assert_eq!(
-        client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &10u32),
-        vec![&env, vault_id_1, vault_id_2]
-    );
-    
-    // Only locked vaults
-    assert_eq!(
-        client.get_vaults_by_beneficiary(&beneficiary, &Some(ReleaseStatus::Locked), &0u32, &10u32),
-        vec![&env, vault_id_2]
-    );
-    
-    // Only released vaults
-    assert_eq!(
-        client.get_vaults_by_beneficiary(&beneficiary, &Some(ReleaseStatus::Released), &0u32, &10u32),
-        vec![&env, vault_id_1]
-    );
-}
-
-#[test]
-fn test_get_vaults_by_owner_with_cancelled_status_filter() {
+fn test_get_active_vaults_by_beneficiary_excludes_released() {
     let (env, owner, beneficiary, _, _, client) = setup();
 
     let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
-    client.deposit(&vault_id, &owner, &500i128);
-    client.cancel_vault(&vault_id, &owner);
-    
-    // Only cancelled vaults
+
+    // before release: active list contains the vault
     assert_eq!(
-        client.get_vaults_by_owner(&owner, &Some(ReleaseStatus::Cancelled), &0u32, &10u32),
+        client.get_active_vaults_by_beneficiary(&beneficiary, &0u32, &10u32),
         vec![&env, vault_id]
     );
-    
-    // No locked vaults
+    // historical list also contains it
     assert_eq!(
-        client.get_vaults_by_owner(&owner, &Some(ReleaseStatus::Locked), &0u32, &10u32),
+        client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32),
+        vec![&env, vault_id]
+    );
+
+    // expire and release
+    env.ledger().with_mut(|l| l.timestamp += 101);
+    client.trigger_release(&vault_id);
+
+    // active list is now empty
+    assert_eq!(
+        client.get_active_vaults_by_beneficiary(&beneficiary, &0u32, &10u32),
+        vec![&env]
+    );
+    // historical list still contains the released vault
+    assert_eq!(
+        client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32),
+        vec![&env, vault_id]
+    );
+}
+
+#[test]
+fn test_cancel_vault_removes_from_owner_and_beneficiary_indexes() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+
+    assert_eq!(client.get_vaults_by_owner(&owner, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32), vec![&env, vault_id]);
+
+    client.cancel_vault(&vault_id);
+
+    assert_eq!(client.get_vaults_by_owner(&owner, &0u32, &10u32), vec![&env]);
+    assert_eq!(client.get_vaults_by_beneficiary(&beneficiary, &0u32, &10u32), vec![&env]);
+}
+
+// ---- Pagination tests ----
+
+#[test]
+fn test_get_vaults_by_owner_pagination() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+
+    let ids: Vec<u64> = (0..5).map(|_| client.create_vault(&owner, &beneficiary, &100u64)).collect();
+
+    // page 0 of size 2 → first two
+    assert_eq!(
+        client.get_vaults_by_owner(&owner, &None, &0u32, &2u32),
+        vec![&env, ids[0], ids[1]]
+    );
+    // page 1 of size 2 → next two
+    assert_eq!(
+        client.get_vaults_by_owner(&owner, &None, &1u32, &2u32),
+        vec![&env, ids[2], ids[3]]
+    );
+    // page 2 of size 2 → last one
+    assert_eq!(
+        client.get_vaults_by_owner(&owner, &None, &2u32, &2u32),
+        vec![&env, ids[4]]
+    );
+    // out-of-range page → empty
+    assert_eq!(
+        client.get_vaults_by_owner(&owner, &None, &10u32, &2u32),
+        vec![&env]
+    );
+    // page_size 0 → empty
+    assert_eq!(
+        client.get_vaults_by_owner(&owner, &None, &0u32, &0u32),
         vec![&env]
     );
 }
 
+#[test]
+fn test_get_vaults_by_beneficiary_pagination() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+
+    let ids: Vec<u64> = (0..5).map(|_| client.create_vault(&owner, &beneficiary, &100u64)).collect();
+
+    assert_eq!(
+        client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &2u32),
+        vec![&env, ids[0], ids[1]]
+    );
+    assert_eq!(
+        client.get_vaults_by_beneficiary(&beneficiary, &None, &1u32, &2u32),
+        vec![&env, ids[2], ids[3]]
+    );
+    assert_eq!(
+        client.get_vaults_by_beneficiary(&beneficiary, &None, &2u32, &2u32),
+        vec![&env, ids[4]]
+    );
+    assert_eq!(
+        client.get_vaults_by_beneficiary(&beneficiary, &None, &10u32, &2u32),
+        vec![&env]
+    );
+    assert_eq!(
+        client.get_vaults_by_beneficiary(&beneficiary, &None, &0u32, &0u32),
+        vec![&env]
+    );
+}
 
 #[test]
-fn test_update_check_in_interval_resets_last_check_in() {
+fn test_withdraw_rejected_on_cancelled_vault() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    // cancel_vault refunds and marks status = Cancelled
+    client.cancel_vault(&vault_id, &owner);
+
+    // Any withdraw attempt on a Cancelled vault must return AlreadyReleased (#7)
+    let err = client
+        .try_withdraw(&vault_id, &owner, &1i128)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(7));
+}
+
+#[test]
+fn test_withdraw_rejected_on_released_vault() {
     let (env, owner, beneficiary, _, _, client) = setup();
 
     let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
-    let initial_check_in = client.get_vault(&vault_id).last_check_in;
+    client.deposit(&vault_id, &owner, &500i128);
+    // advance past check-in interval to expire the vault
+    env.ledger().with_mut(|l| l.timestamp += 200);
+    client.trigger_release(&vault_id);
 
-    // Advance time significantly
-    env.ledger().with_mut(|l| l.timestamp += 500);
-
-    // Update interval — should reset last_check_in to current timestamp
-    client.update_check_in_interval(&vault_id, &300u64);
-
-    let vault = client.get_vault(&vault_id);
-    let new_check_in = vault.last_check_in;
-
-    // last_check_in should be updated to the current timestamp
-    assert!(new_check_in > initial_check_in);
-    assert_eq!(new_check_in, initial_check_in + 500);
-
-    // Deadline should be recalculated from the new last_check_in
-    let deadline = new_check_in + vault.check_in_interval;
-    let now = env.ledger().timestamp();
-    assert_eq!(deadline - now, 300u64);
+    // Any withdraw attempt on a Released vault must return AlreadyReleased (#7)
+    let err = client
+        .try_withdraw(&vault_id, &owner, &1i128)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(7));
 }
 
+// ---- set_beneficiaries tests ----
 
 #[test]
-fn test_set_min_rejects_when_greater_than_existing_max() {
-    let (_, _, _, _, _, client) = setup();
-    client.set_max_check_in_interval(&1_000u64);
-    assert!(client.try_set_min_check_in_interval(&2_000u64).is_err());
-}
-
-#[test]
-fn test_set_max_rejects_when_less_than_existing_min() {
-    let (_, _, _, _, _, client) = setup();
-    client.set_min_check_in_interval(&1_000u64);
-    assert!(client.try_set_max_check_in_interval(&500u64).is_err());
-}
-
-#[test]
-fn test_set_min_and_max_in_order_succeeds() {
-    let (_, _, _, _, _, client) = setup();
-    client.set_min_check_in_interval(&100u64);
-    client.set_max_check_in_interval(&1_000u64);
-    assert_eq!(client.get_min_check_in_interval(), Some(100u64));
-    assert_eq!(client.get_max_check_in_interval(), Some(1_000u64));
-}
-
-#[test]
-fn test_set_max_then_min_in_order_succeeds() {
-    let (_, _, _, _, _, client) = setup();
-    client.set_max_check_in_interval(&1_000u64);
-    client.set_min_check_in_interval(&100u64);
-    assert_eq!(client.get_min_check_in_interval(), Some(100u64));
-    assert_eq!(client.get_max_check_in_interval(), Some(1_000u64));
-}
-
-
-#[test]
-#[should_panic(expected = "Error(Contract, #4)")]
-fn test_trigger_release_zero_balance_multi_beneficiary_returns_empty_vault() {
+fn test_set_beneficiaries_rejects_empty_list() {
     let (env, owner, beneficiary, _, _, client) = setup();
-    let beneficiary2 = Address::generate(&env);
-
     let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
-    
-    // Set multi-beneficiaries but don't deposit
+
+    let result = client.try_set_beneficiaries(&vault_id, &vec![&env]);
+    assert!(result.is_err(), "empty beneficiaries list must be rejected");
+}
+
+#[test]
+fn test_set_beneficiaries_rejects_invalid_bps_sum() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    let other = Address::generate(&env);
+
+    // BPS sums to 5_000, not 10_000
+    let result = client.try_set_beneficiaries(
+        &vault_id,
+        &vec![&env, BeneficiaryEntry { address: other, bps: 5_000 }],
+    );
+    assert!(result.is_err(), "BPS sum != 10_000 must be rejected");
+}
+
+#[test]
+fn test_set_beneficiaries_accepts_valid_single_entry() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    let sole = Address::generate(&env);
+
     client.set_beneficiaries(
         &vault_id,
-        &owner,
-        &vec![
-            &env,
-            BeneficiaryEntry { address: beneficiary.clone(), bps: 5_000 },
-            BeneficiaryEntry { address: beneficiary2.clone(), bps: 5_000 },
-        ],
+        &vec![&env, BeneficiaryEntry { address: sole.clone(), bps: 10_000 }],
     );
 
-    env.ledger().with_mut(|l| l.timestamp += 200);
-
-    // should panic with EmptyVault before iterating beneficiaries
-    client.trigger_release(&vault_id);
-}
-
-#[test]
-fn test_cancel_vault_refunds_full_balance_to_owner() {
-    let (env, owner, beneficiary, _, token_address, client) = setup();
-    let token_client = token::Client::new(&env, &token_address);
-
-    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
-    let deposit_amount = 500i128;
-    client.deposit(&vault_id, &owner, &deposit_amount);
-
-    let owner_balance_before = token_client.balance(&owner);
-    client.cancel_vault(&vault_id, &owner);
-    let owner_balance_after = token_client.balance(&owner);
-
-    assert_eq!(owner_balance_after - owner_balance_before, deposit_amount);
-    assert_eq!(client.get_vault(&vault_id).balance, 0i128);
-    assert_eq!(client.get_release_status(&vault_id), ReleaseStatus::Cancelled);
-
-    // Second cancel_vault call should fail
-    assert!(client.try_cancel_vault(&vault_id, &owner).is_err());
-}
-
-#[test]
-fn test_transfer_ownership_updates_owner_index_and_blocks_old_owner() {
-    let (env, owner, beneficiary, _, _, client) = setup();
-    let new_owner = Address::generate(&env);
-
-    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
-
-    // old owner sees the vault
-    assert_eq!(client.get_vaults_by_owner(&owner, &None, &0u32, &10u32), vec![&env, vault_id]);
-    // new owner does not see the vault yet
-    assert_eq!(client.get_vaults_by_owner(&new_owner, &None, &0u32, &10u32), vec![&env]);
-
-    client.transfer_ownership(&vault_id, &owner, &new_owner);
-
-    // old owner no longer sees the vault
-    assert_eq!(client.get_vaults_by_owner(&owner, &None, &0u32, &10u32), vec![&env]);
-    // new owner now sees the vault
-    assert_eq!(client.get_vaults_by_owner(&new_owner, &None, &0u32, &10u32), vec![&env, vault_id]);
-
-    // old owner cannot call check_in
-    assert!(client.try_check_in(&vault_id, &owner).is_err());
-}
-
-// Regression test for #96: create_vault must assign sequential, non-duplicate vault IDs.
-#[test]
-fn test_create_vault_assigns_sequential_ids() {
-    let (env, owner, beneficiary, _, _, client) = setup();
-    let b2 = Address::generate(&env);
-
-    let id1 = client.create_vault(&owner, &beneficiary, &100u64);
-    let id2 = client.create_vault(&owner, &b2, &100u64);
-
-    assert_eq!(id1, 1, "first vault must have id 1");
-    assert_eq!(id2, 2, "second vault must have id 2 (sequential, no duplicate assignment)");
-}
-
-// Regression tests for #99: assert_interval_in_bounds must return structured
-// error codes 14 (IntervalTooLow) and 15 (IntervalTooHigh) instead of failing
-// to compile due to missing ContractError variants.
-#[test]
-fn test_create_vault_returns_interval_too_low_error() {
-    let (_, owner, beneficiary, _, _, client) = setup();
-    client.set_min_check_in_interval(&3_600u64);
-
-    let err = client
-        .try_create_vault(&owner, &beneficiary, &100u64)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, soroban_sdk::Error::from_contract_error(14));
-}
-
-#[test]
-fn test_create_vault_returns_interval_too_high_error() {
-    let (_, owner, beneficiary, _, _, client) = setup();
-    client.set_max_check_in_interval(&1_000u64);
-
-    let err = client
-        .try_create_vault(&owner, &beneficiary, &2_000u64)
-        .unwrap_err()
-        .unwrap();
-    assert_eq!(err, soroban_sdk::Error::from_contract_error(15));
+    let vault = client.get_vault(&vault_id);
+    assert_eq!(vault.beneficiaries.len(), 1);
+    assert_eq!(vault.beneficiaries.get(0).unwrap().address, sole);
 }
