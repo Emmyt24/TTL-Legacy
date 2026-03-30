@@ -231,7 +231,7 @@ impl TtlVaultContract {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::VaultNotFound))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NotInitialized))
     }
 
     /// Proposes a new admin. The proposed admin must call `accept_admin` to complete the transfer.
@@ -285,6 +285,7 @@ impl TtlVaultContract {
         check_in_interval: u64,
     ) -> u64 {
         owner.require_auth();
+        Self::require_initialized(&env);
         if check_in_interval == 0 {
             panic_with_error!(&env, ContractError::InvalidInterval);
         }
@@ -378,6 +379,7 @@ impl TtlVaultContract {
     /// * Panics if the vault is not in Locked status
     pub fn deposit(env: Env, vault_id: u64, from: Address, amount: i128) {
         Self::assert_not_paused(&env);
+        Self::require_initialized(&env);
         if amount <= 0 {
             panic_with_error!(&env, ContractError::InvalidAmount);
         }
@@ -1151,6 +1153,12 @@ impl TtlVaultContract {
             .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(env, ContractError::NotInitialized))
+    }
+
+    fn require_initialized(env: &Env) {
+        if env.storage().instance().get::<DataKey, Address>(&DataKey::Admin).is_none() {
+            panic_with_error!(env, ContractError::NotInitialized);
+        }
     }
 
     fn load_token(env: &Env) -> Address {
