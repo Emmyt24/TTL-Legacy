@@ -1135,8 +1135,11 @@ impl TtlVaultContract {
                 return Err(ContractError::AlreadyReleased);
             }
             // Invariant: owner and beneficiary must always be distinct addresses.
-            // BeneficiaryVaults index does not need updating here because the vault's
-            // beneficiary field is not changed by an ownership transfer.
+            // BeneficiaryVaults is keyed by beneficiary address. Because ownership
+            // transfer never changes vault.beneficiary, the index requires no update:
+            // the existing entry (beneficiary → vault_id) remains valid. Any other
+            // vaults where new_owner appears as a beneficiary are unrelated entries
+            // in the index and are also unaffected.
             if new_owner == vault.beneficiary {
                 return Err(ContractError::InvalidBeneficiary);
             }
