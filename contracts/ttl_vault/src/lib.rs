@@ -58,7 +58,7 @@ pub enum ContractError {
     InvalidBeneficiary = 17,
     BalanceOverflow = 18,
     VaultExpired = 19,
-    NotInitialized = 20,
+    InvalidAdmin = 20,
 }
 
 #[contract]
@@ -231,7 +231,7 @@ impl TtlVaultContract {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error!(&env, ContractError::VaultNotFound))
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NotInitialized))
     }
 
     /// Proposes a new admin. The proposed admin must call `accept_admin` to complete the transfer.
@@ -285,6 +285,7 @@ impl TtlVaultContract {
         check_in_interval: u64,
     ) -> u64 {
         owner.require_auth();
+        Self::require_initialized(&env);
         if check_in_interval == 0 {
             panic_with_error!(&env, ContractError::InvalidInterval);
         }
@@ -295,7 +296,8 @@ impl TtlVaultContract {
             panic_with_error!(&env, ContractError::InvalidBeneficiary);
         }
 
-        let vault_id = Self::vault_count(env.clone()) + 1;
+        let next_vault_count = Self::vault_count(env.clone()) + 1;
+        let vault_id = next_vault_count;
         let timestamp = env.ledger().timestamp();
         let vault = Vault {
             owner: owner.clone(),
@@ -311,12 +313,18 @@ impl TtlVaultContract {
         Self::save_vault(&env, vault_id, &vault);
         Self::add_owner_vault_id(&env, &owner, vault_id);
         Self::add_beneficiary_vault_id(&env, &beneficiary, vault_id);
-        // VaultCount is updated only after all vault data is written. If any
-        // prior storage call panics, the count is not advanced, keeping it
-        // consistent with the number of successfully persisted vaults.
-        // Store in persistent storage to survive instance TTL expiry.
+        // VaultCount is an incrementing generation ID and must be updated
+        // atomically with successful vault persistence.
+        //
+        // Ordering guarantee:
+        //  1) Compute next ID from current vault count
+        //  2) Persist the vault and owner/beneficiary indexes
+        //  3) Persist VaultCount only after the vault is fully saved
+        // If any prior call (save_vault/add_owner_vault_id/add_beneficiary_vault_id)
+        // panics, VaultCount remains unchanged and consumers cannot observe
+        // a hole in the sequence.
         let key = DataKey::VaultCount;
-        env.storage().persistent().set(&key, &vault_id);
+        env.storage().persistent().set(&key, &next_vault_count);
         env.storage().persistent().extend_ttl(&key, VAULT_TTL_THRESHOLD, VAULT_TTL_LEDGERS);
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
         env.events().publish(
@@ -357,6 +365,9 @@ impl TtlVaultContract {
         }
         vault.last_check_in = env.ledger().timestamp();
         Self::save_vault(&env, vault_id, &vault);
+        let owner_ids = Self::load_owner_vault_ids(&env, &vault.owner);
+        Self::save_owner_vault_ids(&env, &vault.owner, &owner_ids);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
         env.events().publish((CHECK_IN_TOPIC, vault_id), vault.last_check_in);
         Ok(())
     }
@@ -378,6 +389,7 @@ impl TtlVaultContract {
     /// * Panics if the vault is not in Locked status
     pub fn deposit(env: Env, vault_id: u64, from: Address, amount: i128) {
         Self::assert_not_paused(&env);
+        Self::require_initialized(&env);
         if amount <= 0 {
             panic_with_error!(&env, ContractError::InvalidAmount);
         }
@@ -680,6 +692,7 @@ impl TtlVaultContract {
 
         vault.balance -= amount;
         Self::save_vault(&env, vault_id, &vault);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
         Ok(())
     }
 
@@ -709,6 +722,9 @@ impl TtlVaultContract {
             beneficiaries: Vec<BeneficiaryEntry>,
         ) -> Result<(), ContractError> {
             caller.require_auth();
+            if beneficiaries.is_empty() {
+                return Err(ContractError::InvalidBps);
+            }
             let mut vault = Self::load_vault(&env, vault_id);
             if caller != vault.owner {
                 return Err(ContractError::NotOwner);
@@ -852,6 +868,8 @@ impl TtlVaultContract {
     /// * `status_filter` - Optional status filter (None returns all vaults, Some(status) returns only vaults with that status)
     /// * `page` - Zero-based page index
     /// * `page_size` - Number of items per page
+    /// Returns all vault IDs associated with a beneficiary, including released and cancelled vaults.
+    /// Use `get_active_vaults_by_beneficiary` to retrieve only locked (active) vaults.
     ///
     /// # Returns
     /// A vector of vault IDs for the requested page
@@ -871,6 +889,20 @@ impl TtlVaultContract {
             all
         };
         Self::paginate(&env, filtered, page, page_size)
+    }
+
+    /// Returns only active (Locked) vault IDs for a beneficiary, excluding released and cancelled vaults.
+    pub fn get_active_vaults_by_beneficiary(env: Env, beneficiary: Address, page: u32, page_size: u32) -> Vec<u64> {
+        let all = Self::load_beneficiary_vault_ids(&env, &beneficiary);
+        let mut active = Vec::new(&env);
+        for id in all.iter() {
+            if let Some(v) = Self::try_load_vault(&env, id) {
+                if v.status == ReleaseStatus::Locked {
+                    active.push_back(id);
+                }
+            }
+        }
+        Self::paginate(&env, active, page, page_size)
     }
 
     /// Returns the remaining time-to-live (TTL) for a vault in seconds.
@@ -1060,6 +1092,8 @@ impl TtlVaultContract {
         vault.balance = 0;
         vault.status = ReleaseStatus::Cancelled;
         Self::save_vault(&env, vault_id, &vault);
+        Self::remove_owner_vault_id(&env, &vault.owner, vault_id);
+        Self::remove_beneficiary_vault_id(&env, &vault.beneficiary, vault_id);
         env.events().publish((CANCEL_TOPIC, vault_id), (vault.owner, refund_amount));
         Ok(())
     }
@@ -1151,6 +1185,12 @@ impl TtlVaultContract {
             .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(env, ContractError::NotInitialized))
+    }
+
+    fn require_initialized(env: &Env) {
+        if env.storage().instance().get::<DataKey, Address>(&DataKey::Admin).is_none() {
+            panic_with_error!(env, ContractError::NotInitialized);
+        }
     }
 
     fn load_token(env: &Env) -> Address {
