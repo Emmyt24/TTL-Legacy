@@ -1103,13 +1103,38 @@ fn test_state_mutating_calls_extend_instance_ttl() {
     client.withdraw(&vault_id, &owner, &1_000);
     assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
 
+    // update_beneficiary
+    let new_beneficiary = Address::generate(&env);
+    client.update_beneficiary(&vault_id, &owner, &new_beneficiary);
+    assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
+
+    // set_beneficiaries
+    let beneficiaries = vec![&env, BeneficiaryEntry { address: new_beneficiary.clone(), bps: 10_000 }];
+    client.set_beneficiaries(&vault_id, &owner, &beneficiaries);
+    assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
+
+    // update_metadata
+    client.update_metadata(&vault_id, &owner, &String::from_str(&env, "test"));
+    assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
+
     // partial_release
     client.partial_release(&vault_id, &1_000);
     assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
 
-    // trigger_release: advance time past expiry first
+    // transfer_ownership
+    let new_owner = Address::generate(&env);
+    client.transfer_ownership(&vault_id, &owner, &new_owner);
+    assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
+
+    // cancel_vault
+    client.cancel_vault(&vault_id, &new_owner);
+    assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
+
+    // trigger_release: advance time past expiry first (but vault is cancelled, so create new one)
+    let vault_id2 = client.create_vault(&owner, &beneficiary, &interval);
+    client.deposit(&vault_id2, &owner, &10_000);
     env.ledger().with_mut(|l| l.timestamp += interval + 1);
-    client.trigger_release(&vault_id);
+    client.trigger_release(&vault_id2);
     assert!(get_ttl() >= INSTANCE_TTL_THRESHOLD as u32);
 }
 
