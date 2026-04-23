@@ -39,8 +39,9 @@ pub enum ContractError {
     IntervalTooLow = 14,
     IntervalTooHigh = 15,
     NotExpired = 16,
-    InvalidBeneficiary = 11,
-    BalanceOverflow = 12,
+    InvalidBeneficiary = 17,
+    BalanceOverflow = 18,
+    InvalidAdmin = 20,
 }
 
 #[contract]
@@ -67,6 +68,9 @@ impl TtlVaultContract {
             || env.storage().instance().has(&DataKey::Admin)
         {
             panic_with_error!(&env, ContractError::AlreadyInitialized);
+        }
+        if xlm_token == admin {
+            panic_with_error!(&env, ContractError::InvalidAdmin);
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::TokenAddress, &xlm_token);
@@ -233,8 +237,6 @@ impl TtlVaultContract {
         }
 
         let vault_id = Self::vault_count(env.clone()) + 1;
-
-        let vault_id = Self::vault_count(env.clone()) + 1;
         let vault = Vault {
             owner: owner.clone(),
             beneficiary: beneficiary.clone(),
@@ -248,6 +250,9 @@ impl TtlVaultContract {
         Self::save_vault(&env, vault_id, &vault);
         Self::add_owner_vault_id(&env, &owner, vault_id);
         Self::add_beneficiary_vault_id(&env, &beneficiary, vault_id);
+        // Atomicity guarantee: VaultCount is written only after vault and indexes
+        // are persisted. If save_vault or index updates panic, VaultCount stays
+        // unchanged and no gap is introduced in the ID sequence.
         env.storage().instance().set(&DataKey::VaultCount, &vault_id);
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
         env.events().publish(
@@ -714,7 +719,7 @@ impl TtlVaultContract {
         let vault = Self::try_load_vault(&env, vault_id)?;
         let deadline = vault.last_check_in + vault.check_in_interval;
         let now = env.ledger().timestamp();
-        if now >= deadline { Some(0) } else { Some(deadline - now) }
+        if now >= deadline { None } else { Some(deadline - now) }
     }
 
     /// Returns the current release status of a vault.
@@ -779,8 +784,14 @@ impl TtlVaultContract {
             panic_with_error!(&env, ContractError::InvalidBeneficiary);
         }
 
-        vault.beneficiary = new_beneficiary;
+        let old_beneficiary = vault.beneficiary.clone();
+        vault.beneficiary = new_beneficiary.clone();
         Self::save_vault(&env, vault_id, &vault);
+
+        if old_beneficiary != new_beneficiary {
+            Self::remove_beneficiary_vault_id(&env, &old_beneficiary, vault_id);
+            Self::add_beneficiary_vault_id(&env, &new_beneficiary, vault_id);
+        }
     }
 
     /// Updates the check-in interval for a vault.

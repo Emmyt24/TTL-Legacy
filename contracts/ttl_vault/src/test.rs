@@ -624,3 +624,70 @@ fn test_deposit_rejects_balance_overflow() {
 
     assert!(result.is_err(), "expected overflow error on deposit exceeding i128::MAX");
 }
+
+// ---- Issue #108: initialize rejects xlm_token == admin ----
+
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")]
+fn test_initialize_rejects_same_xlm_token_and_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let addr = Address::generate(&env);
+    let contract_address = env.register_contract(None, TtlVaultContract);
+    let client = TtlVaultContractClient::new(&env, &contract_address);
+    client.initialize(&addr, &addr);
+}
+
+// ---- Issue #109: vault count is consistent after creation ----
+
+#[test]
+fn test_vault_count_consistent_after_creation() {
+    let (_, owner, beneficiary, _, _, client) = setup();
+    assert_eq!(client.vault_count(), 0);
+    let id = client.create_vault(&owner, &beneficiary, &1000u64);
+    assert_eq!(id, 1);
+    assert_eq!(client.vault_count(), 1);
+}
+
+#[test]
+fn test_vault_count_not_incremented_on_failed_create() {
+    let (_, owner, _, _, _, client) = setup();
+    assert_eq!(client.vault_count(), 0);
+    // owner == beneficiary → InvalidBeneficiary, must not mutate VaultCount
+    assert!(client.try_create_vault(&owner, &owner, &100u64).is_err());
+    assert_eq!(client.vault_count(), 0);
+}
+
+// ---- Issue #250: get_ttl_remaining returns None when expired ----
+
+#[test]
+fn test_get_ttl_remaining_returns_none_when_expired() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    env.ledger().with_mut(|l| l.timestamp += 200);
+    assert!(client.get_ttl_remaining(&vault_id).is_none());
+}
+
+#[test]
+fn test_get_ttl_remaining_returns_none_for_nonexistent_vault() {
+    let (_, _, _, _, _, client) = setup();
+    assert!(client.get_ttl_remaining(&9999u64).is_none());
+}
+
+// ---- Issue #107: update_beneficiary updates BeneficiaryVaults index ----
+
+#[test]
+fn test_update_beneficiary_updates_index() {
+    let (env, owner, old_beneficiary, _, _, client) = setup();
+    let new_beneficiary = Address::generate(&env);
+
+    let vault_id = client.create_vault(&owner, &old_beneficiary, &100u64);
+
+    assert_eq!(client.get_vaults_by_beneficiary(&old_beneficiary, &None, &0u32, &10u32), vec![&env, vault_id]);
+    assert_eq!(client.get_vaults_by_beneficiary(&new_beneficiary, &None, &0u32, &10u32), vec![&env]);
+
+    client.update_beneficiary(&vault_id, &new_beneficiary);
+
+    assert_eq!(client.get_vaults_by_beneficiary(&old_beneficiary, &None, &0u32, &10u32), vec![&env]);
+    assert_eq!(client.get_vaults_by_beneficiary(&new_beneficiary, &None, &0u32, &10u32), vec![&env, vault_id]);
+}
