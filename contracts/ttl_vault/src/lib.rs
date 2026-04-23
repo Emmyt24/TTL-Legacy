@@ -1029,6 +1029,7 @@ impl TtlVaultContract {
             Self::remove_beneficiary_vault_id(&env, &old_beneficiary, vault_id);
             Self::add_beneficiary_vault_id(&env, &new_beneficiary, vault_id);
         }
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
         Ok(())
     }
 
@@ -1122,6 +1123,7 @@ impl TtlVaultContract {
         Self::save_vault(&env, vault_id, &vault);
         Self::remove_owner_vault_id(&env, &vault.owner, vault_id);
         Self::remove_beneficiary_vault_id(&env, &vault.beneficiary, vault_id);
+        env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
         env.events().publish((CANCEL_TOPIC, vault_id), (vault.owner, refund_amount));
         Ok(())
     }
@@ -1175,6 +1177,7 @@ impl TtlVaultContract {
             }
             vault.owner = new_owner.clone();
             Self::save_vault(&env, vault_id, &vault);
+            env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
             env.events().publish((OWNERSHIP_TOPIC, vault_id), (old_owner, new_owner));
             Ok(())
         }
