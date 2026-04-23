@@ -856,7 +856,7 @@ fn test_trigger_release_emits_event_with_zero_balance() {
     client.trigger_release(&vault_id);
 }
 
-// Regression test for #97: trigger_release must return structured error code 16
+// Regression test for #97 / #279: trigger_release must return structured error code 16
 // (ContractError::NotExpired) when the vault TTL has not yet lapsed, instead of
 // panicking with a raw string.
 #[test]
