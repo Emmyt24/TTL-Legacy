@@ -642,8 +642,8 @@ fn test_get_contract_token_returns_correct_address() {
 fn test_create_vault_zero_interval_fails() {
     let (_, owner, beneficiary, _, _, client) = setup();
 
-    let result = client.try_create_vault(&owner, &beneficiary, &0u64);
-    assert!(result.is_err());
+    let err = client.try_create_vault(&owner, &beneficiary, &0u64).unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from_contract_error(2));
 }
 
 #[test]
