@@ -1572,3 +1572,50 @@ fn test_update_beneficiary_event_contains_old_and_new_beneficiary() {
     assert_eq!(old, old_beneficiary);
     assert_eq!(new, new_beneficiary);
 }
+
+#[test]
+fn test_set_beneficiaries_emits_event() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let b2 = Address::generate(&env);
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+
+    let entries = soroban_sdk::vec![
+        &env,
+        BeneficiaryEntry { address: beneficiary.clone(), bps: 6_000 },
+        BeneficiaryEntry { address: b2.clone(), bps: 4_000 },
+    ];
+    client.set_beneficiaries(&vault_id, &owner, &entries);
+
+    let event = env.events().all().iter().find(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone().into_val(&env);
+        topics
+            .get(0)
+            .and_then(|v| v.try_into_val(&env).ok())
+            .map(|s: soroban_sdk::Symbol| s == types::SET_BENEFICIARIES_TOPIC)
+            .unwrap_or(false)
+    });
+    assert!(event.is_some(), "set_bens event not emitted");
+}
+
+#[test]
+fn test_update_check_in_interval_emits_event_with_old_and_new() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+
+    client.update_check_in_interval(&vault_id, &300u64);
+
+    let event = env.events().all().iter().find(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone().into_val(&env);
+        topics
+            .get(0)
+            .and_then(|v| v.try_into_val(&env).ok())
+            .map(|s: soroban_sdk::Symbol| s == types::UPDATE_INTERVAL_TOPIC)
+            .unwrap_or(false)
+    });
+    assert!(event.is_some(), "upd_intv event not emitted");
+
+    let data = event.unwrap().2.clone();
+    let (old, new): (u64, u64) = data.try_into_val(&env).unwrap();
+    assert_eq!(old, 100u64);
+    assert_eq!(new, 300u64);
+}

@@ -9,6 +9,8 @@ pub const CHECK_IN_TOPIC: Symbol = symbol_short!("check_in");
 pub const CANCEL_TOPIC: Symbol = symbol_short!("cancel");
 pub const OWNERSHIP_TOPIC: Symbol = symbol_short!("own_xfer");
 pub const BENEFICIARY_UPDATED_TOPIC: Symbol = symbol_short!("ben_upd");
+pub const SET_BENEFICIARIES_TOPIC: Symbol = symbol_short!("set_bens");
+pub const UPDATE_INTERVAL_TOPIC: Symbol = symbol_short!("upd_intv");
 
 /// Warning threshold in seconds. If TTL remaining < this value, ping_expiry emits an event.
 pub const EXPIRY_WARNING_THRESHOLD: u64 = 86_400; // 24 hours

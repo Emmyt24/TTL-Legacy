@@ -9,7 +9,8 @@ mod types;
 use types::{
     BeneficiaryEntry, DataKey, ReleaseEvent, ReleaseStatus, Vault, EXPIRY_WARNING_THRESHOLD,
     BENEFICIARY_UPDATED_TOPIC, CANCEL_TOPIC, CHECK_IN_TOPIC, DEPOSIT_TOPIC, OWNERSHIP_TOPIC,
-    PING_EXPIRY_TOPIC, RELEASE_TOPIC, VAULT_CREATED_TOPIC, WITHDRAW_TOPIC, MAX_METADATA_LEN,
+    PING_EXPIRY_TOPIC, RELEASE_TOPIC, SET_BENEFICIARIES_TOPIC, UPDATE_INTERVAL_TOPIC,
+    VAULT_CREATED_TOPIC, WITHDRAW_TOPIC, MAX_METADATA_LEN,
 };
 
 #[cfg(test)]
@@ -771,9 +772,10 @@ impl TtlVaultContract {
                     return Err(ContractError::InvalidBeneficiary);
                 }
             }
-            vault.beneficiaries = beneficiaries;
+            vault.beneficiaries = beneficiaries.clone();
             Self::save_vault(&env, vault_id, &vault);
             env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
+            env.events().publish((SET_BENEFICIARIES_TOPIC, vault_id), beneficiaries);
             Ok(())
         }
 
@@ -1072,6 +1074,7 @@ impl TtlVaultContract {
         if vault.status != ReleaseStatus::Locked {
             return Err(ContractError::AlreadyReleased);
         }
+        let old_interval = vault.check_in_interval;
         vault.check_in_interval = new_interval;
         vault.last_check_in = env.ledger().timestamp();
         Self::save_vault(&env, vault_id, &vault);
@@ -1084,6 +1087,7 @@ impl TtlVaultContract {
             new_ttl,
         );
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
+        env.events().publish((UPDATE_INTERVAL_TOPIC, vault_id), (old_interval, new_interval));
         Ok(())
     }
 
