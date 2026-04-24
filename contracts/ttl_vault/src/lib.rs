@@ -9,9 +9,9 @@ mod types;
 use types::{
     BeneficiaryEntry, DataKey, ReleaseEvent, ReleaseStatus, Vault, EXPIRY_WARNING_THRESHOLD,
     BENEFICIARY_UPDATED_TOPIC, CANCEL_TOPIC, CHECK_IN_TOPIC, DEPOSIT_TOPIC, OWNERSHIP_TOPIC,
-    PAUSE_TOPIC, PING_EXPIRY_TOPIC, RELEASE_TOPIC, SET_BENEFICIARIES_TOPIC, SET_MIN_INTERVAL_TOPIC,
-    UNPAUSE_TOPIC, UPDATE_INTERVAL_TOPIC, UPDATE_METADATA_TOPIC, VAULT_CREATED_TOPIC,
-    WITHDRAW_TOPIC, MAX_METADATA_LEN,
+    PAUSE_TOPIC, PING_EXPIRY_TOPIC, RELEASE_TOPIC, SET_BENEFICIARIES_TOPIC, SET_MAX_INTERVAL_TOPIC,
+    SET_MIN_INTERVAL_TOPIC, UNPAUSE_TOPIC, UPDATE_INTERVAL_TOPIC, UPDATE_METADATA_TOPIC,
+    VAULT_CREATED_TOPIC, WITHDRAW_TOPIC, MAX_METADATA_LEN,
 };
 
 #[cfg(test)]
@@ -195,6 +195,7 @@ impl TtlVaultContract {
         }
         env.storage().instance().set(&DataKey::MaxCheckInInterval, &max_interval);
         env.storage().instance().extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
+        env.events().publish((SET_MAX_INTERVAL_TOPIC,), max_interval);
     }
 
     /// Returns the minimum check-in interval if set.
