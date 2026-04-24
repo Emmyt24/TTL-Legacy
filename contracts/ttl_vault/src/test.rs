@@ -859,6 +859,26 @@ fn test_set_and_get_min_check_in_interval() {
 }
 
 #[test]
+fn test_set_min_check_in_interval_emits_event() {
+    let (env, _, _, _, _, client) = setup();
+    client.set_min_check_in_interval(&120u64);
+
+    let event = env.events().all().iter().find(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone().into_val(&env);
+        topics
+            .get(0)
+            .and_then(|v| v.try_into_val(&env).ok())
+            .map(|s: soroban_sdk::Symbol| s == types::SET_MIN_INTERVAL_TOPIC)
+            .unwrap_or(false)
+    });
+    assert!(event.is_some(), "set_min event not emitted");
+
+    let data = event.unwrap().2.clone();
+    let emitted: u64 = data.try_into_val(&env).unwrap();
+    assert_eq!(emitted, 120u64);
+}
+
+#[test]
 fn test_create_vault_fails_when_interval_below_min() {
     let (_, owner, beneficiary, _, _, client) = setup();
     client.set_min_check_in_interval(&3_600u64);
