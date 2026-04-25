@@ -222,6 +222,27 @@ fn test_pause_and_unpause_toggle() {
     assert!(!client.is_paused());
 }
 
+// ---- Issue #316: pause event emission test ----
+
+#[test]
+fn test_pause_emits_event() {
+    let (env, _, _, _, _, client) = setup();
+    client.pause();
+
+    let event = env.events().all().iter().find(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone().into_val(&env);
+        topics
+            .get(0)
+            .and_then(|v| v.try_into_val(&env).ok())
+            .map(|s: soroban_sdk::Symbol| s == types::PAUSE_TOPIC)
+            .unwrap_or(false)
+    });
+    assert!(event.is_some(), "pause event not emitted");
+
+    let data: bool = event.unwrap().2.into_val(&env);
+    assert!(data);
+}
+
 // ---- Issue #317: unpause event emission test ----
 
 #[test]
@@ -710,6 +731,29 @@ fn test_update_metadata_rejects_oversized_value() {
 }
 
 #[test]
+fn test_update_metadata_emits_event() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+    let vault_id = client.create_vault(&owner, &beneficiary, &100u64);
+    let new_meta = soroban_sdk::String::from_str(&env, "ipfs://Qm123");
+
+    client.update_metadata(&vault_id, &owner, &new_meta);
+
+    let event = env.events().all().iter().find(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone().into_val(&env);
+        topics
+            .get(0)
+            .and_then(|v| v.try_into_val(&env).ok())
+            .map(|s: soroban_sdk::Symbol| s == types::UPDATE_METADATA_TOPIC)
+            .unwrap_or(false)
+    });
+    assert!(event.is_some(), "upd_meta event not emitted");
+
+    let data = event.unwrap().2.clone();
+    let emitted: soroban_sdk::String = data.try_into_val(&env).unwrap();
+    assert_eq!(emitted, new_meta);
+}
+
+#[test]
 fn test_get_contract_token_returns_correct_address() {
     let (_, _, _, _, token_address, client) = setup();
     assert_eq!(client.get_contract_token(), token_address);
@@ -801,6 +845,26 @@ fn test_set_and_get_max_check_in_interval() {
 }
 
 #[test]
+fn test_set_max_check_in_interval_emits_event() {
+    let (env, _, _, _, _, client) = setup();
+    client.set_max_check_in_interval(&7_200u64);
+
+    let event = env.events().all().iter().find(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone().into_val(&env);
+        topics
+            .get(0)
+            .and_then(|v| v.try_into_val(&env).ok())
+            .map(|s: soroban_sdk::Symbol| s == types::SET_MAX_INTERVAL_TOPIC)
+            .unwrap_or(false)
+    });
+    assert!(event.is_some(), "set_max event not emitted");
+
+    let data = event.unwrap().2.clone();
+    let emitted: u64 = data.try_into_val(&env).unwrap();
+    assert_eq!(emitted, 7_200u64);
+}
+
+#[test]
 fn test_create_vault_fails_when_interval_exceeds_max() {
     let (_, owner, beneficiary, _, _, client) = setup();
     client.set_max_check_in_interval(&1_000u64);
@@ -833,6 +897,26 @@ fn test_set_and_get_min_check_in_interval() {
     assert_eq!(client.get_min_check_in_interval(), None);
     client.set_min_check_in_interval(&60u64);
     assert_eq!(client.get_min_check_in_interval(), Some(60u64));
+}
+
+#[test]
+fn test_set_min_check_in_interval_emits_event() {
+    let (env, _, _, _, _, client) = setup();
+    client.set_min_check_in_interval(&120u64);
+
+    let event = env.events().all().iter().find(|e| {
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> = e.1.clone().into_val(&env);
+        topics
+            .get(0)
+            .and_then(|v| v.try_into_val(&env).ok())
+            .map(|s: soroban_sdk::Symbol| s == types::SET_MIN_INTERVAL_TOPIC)
+            .unwrap_or(false)
+    });
+    assert!(event.is_some(), "set_min event not emitted");
+
+    let data = event.unwrap().2.clone();
+    let emitted: u64 = data.try_into_val(&env).unwrap();
+    assert_eq!(emitted, 120u64);
 }
 
 #[test]
